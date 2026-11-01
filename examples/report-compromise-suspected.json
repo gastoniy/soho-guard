@@ -1,0 +1,133 @@
+{
+  "schema_version": "1.0.0",
+  "kind": "report",
+  "run": {
+    "run_id": "01JAXBN7W2D5F8G3H6J9K1M4P7",
+    "run_seq": 311,
+    "trigger": "timer",
+    "started_at": "2026-10-21T16:02:00.041Z",
+    "finished_at": "2026-10-21T16:02:07.316Z",
+    "agent_version": "0.3.1",
+    "errors": []
+  },
+  "target": {
+    "site_id": "lab-01",
+    "router_id": "r1",
+    "address": "10.20.0.1",
+    "transport": "api-binary",
+    "routeros_version_reported": "7.20.2",
+    "identity_reported": "R1",
+    "profile_used": "ros7"
+  },
+  "policy": {
+    "universal_version": "v1.4.0",
+    "universal_commit": "a3f1c90",
+    "local_commit": "7b2e4d1",
+    "evaluation_mode": "enforce",
+    "mitigation_mode": "auto"
+  },
+  "collection": {
+    "l1": {
+      "required": true,
+      "status": "ok",
+      "duration_ms": 388
+    },
+    "l2": {
+      "required": true,
+      "status": "ok",
+      "sources": [
+        "zeek",
+        "rita"
+      ],
+      "window": {
+        "from": "2026-10-21T15:57:00.000Z",
+        "to": "2026-10-21T16:02:00.000Z"
+      }
+    },
+    "l3": {
+      "required": false,
+      "status": "ok",
+      "sources": [
+        "otx"
+      ]
+    }
+  },
+  "verdict": {
+    "posture": "compromise-suspected",
+    "coverage": "full",
+    "findings_total": 1,
+    "findings_new": 1,
+    "findings_resolved": 0
+  },
+  "findings": [
+    {
+      "fingerprint": "sha256:c5bd9b59ae52d92c05cebb0ee158f61ff6631d9d116181905288545dfd4dce0c",
+      "rule": "integrity.divergence.connections",
+      "rule_source": "universal",
+      "also_matched": [],
+      "phase": "dynamic",
+      "severity": "critical",
+      "ioc": false,
+      "status": "new",
+      "first_seen_at": "2026-10-21T16:02:05.902Z",
+      "trust": {
+        "observed_by": [
+          "L2",
+          "L3"
+        ],
+        "corroborated_by": [],
+        "contradicted_by": [
+          "L1"
+        ],
+        "divergence": true
+      },
+      "evidence": {
+        "type": "behavioral",
+        "l1_claim": {
+          "query": "/ip/firewall/connection",
+          "destination_present": false
+        },
+        "l2_observation": {
+          "destination": "203.0.113.9",
+          "dport": 8443,
+          "proto": "tcp",
+          "flow_count": 12,
+          "bytes_total": 4211,
+          "window": {
+            "from": "2026-10-21T15:57:00.000Z",
+            "to": "2026-10-21T16:02:00.000Z"
+          },
+          "detector": "zeek.conn",
+          "score": null
+        },
+        "l3_corroboration": {
+          "provider": "otx",
+          "verdict": "malicious",
+          "categories": [
+            "c2"
+          ]
+        },
+        "local_ref": "ev:01JAXBN7W2D5F8G3H6J9K1M4P7/zeek"
+      }
+    }
+  ],
+  "resolved": [],
+  "actions": [
+    {
+      "action_id": "A-01",
+      "fingerprint": "sha256:c5bd9b59ae52d92c05cebb0ee158f61ff6631d9d116181905288545dfd4dce0c",
+      "type": "alert",
+      "status": "succeeded",
+      "reason": "divergence=true; wskaźnik kompromitacji wymaga analizy (R8), remediacja konfiguracyjna niewystarczająca (ADR-003)",
+      "started_at": "2026-10-21T16:02:06.410Z",
+      "finished_at": "2026-10-21T16:02:06.655Z",
+      "external_ref": null,
+      "verification": null,
+      "local_ref": null
+    }
+  ],
+  "integrity": {
+    "report_seq": 1,
+    "previous_report_sha256": null
+  }
+}

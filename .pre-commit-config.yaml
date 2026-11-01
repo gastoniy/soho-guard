@@ -1,0 +1,18 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: rsc-secrets
+        name: brak sekretów w plikach .rsc
+        entry: python3 tools/check_rsc_secrets.py
+        language: system
+        files: '\.(rsc|j2)$'
+      - id: policy-lint
+        name: policy_lint
+        entry: python3 tools/policy_lint.py policy
+        language: system
+        pass_filenames: false
+        files: '^policy/'

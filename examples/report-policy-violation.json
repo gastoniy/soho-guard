@@ -1,0 +1,158 @@
+{
+  "schema_version": "1.0.0",
+  "kind": "report",
+  "run": {
+    "run_id": "01JAX7K2M4Q8R3VZ5T6YH0B9CD",
+    "run_seq": 1427,
+    "trigger": "timer",
+    "started_at": "2026-10-21T15:14:02.118Z",
+    "finished_at": "2026-10-21T15:14:06.902Z",
+    "agent_version": "0.3.1",
+    "errors": []
+  },
+  "target": {
+    "site_id": "lab-01",
+    "router_id": "r2",
+    "address": "10.20.0.2",
+    "transport": "api-binary",
+    "routeros_version_reported": "6.49.17",
+    "identity_reported": "R2",
+    "profile_used": "ros6"
+  },
+  "policy": {
+    "universal_version": "v1.4.0",
+    "universal_commit": "a3f1c90",
+    "local_commit": "7b2e4d1",
+    "evaluation_mode": "enforce",
+    "mitigation_mode": "auto"
+  },
+  "collection": {
+    "l1": {
+      "required": true,
+      "status": "ok",
+      "duration_ms": 412
+    },
+    "l2": {
+      "required": true,
+      "status": "ok",
+      "sources": [
+        "zeek",
+        "rita"
+      ],
+      "window": {
+        "from": "2026-10-21T15:09:00.000Z",
+        "to": "2026-10-21T15:14:00.000Z"
+      }
+    },
+    "l3": {
+      "required": false,
+      "status": "degraded",
+      "sources": [
+        "otx",
+        "abuseipdb"
+      ],
+      "note": "abuseipdb: rate limit"
+    }
+  },
+  "verdict": {
+    "posture": "policy-violation",
+    "coverage": "full",
+    "findings_total": 2,
+    "findings_new": 1,
+    "findings_resolved": 0
+  },
+  "findings": [
+    {
+      "fingerprint": "sha256:625ddaf2f1dd28493843e5770dab9f4d26d9f73a38495dc99d26293cc81784e5",
+      "rule": "policy.services.socks.disabled",
+      "rule_source": "universal",
+      "also_matched": [
+        "local.services.allowed-list"
+      ],
+      "phase": "static",
+      "severity": "critical",
+      "ioc": false,
+      "status": "new",
+      "first_seen_at": "2026-10-21T15:14:04.330Z",
+      "trust": {
+        "observed_by": [
+          "L1"
+        ],
+        "corroborated_by": [
+          "L2"
+        ],
+        "contradicted_by": [],
+        "divergence": false
+      },
+      "evidence": {
+        "type": "state",
+        "path": "/ip/socks",
+        "expected": {
+          "enabled": "no"
+        },
+        "observed": {
+          "enabled": "yes",
+          "port": "1080"
+        },
+        "local_ref": "ev:01JAX7K2M4Q8R3VZ5T6YH0B9CD/l1"
+      }
+    },
+    {
+      "fingerprint": "sha256:111b691be964128e0f005066409d8ae6dfe381915df8b519dc535579eefdf732",
+      "rule": "local.ppp.secrets",
+      "rule_source": "local",
+      "also_matched": [],
+      "phase": "static",
+      "severity": "medium",
+      "ioc": false,
+      "status": "persisting",
+      "first_seen_at": "2026-10-21T13:44:01.871Z",
+      "trust": {
+        "observed_by": [
+          "L1"
+        ],
+        "corroborated_by": [],
+        "contradicted_by": [],
+        "divergence": false
+      },
+      "evidence": {
+        "type": "state",
+        "path": "/ppp/secret",
+        "expected": {
+          "name": "vpn-home",
+          "password": "redacted:sha256:1a2b3c4d"
+        },
+        "observed": {
+          "name": "vpn-home",
+          "password": "redacted:sha256:9e8f7a6b"
+        },
+        "local_ref": "ev:01JAX7K2M4Q8R3VZ5T6YH0B9CD/l1"
+      }
+    }
+  ],
+  "resolved": [],
+  "actions": [
+    {
+      "action_id": "A-01",
+      "fingerprint": "sha256:625ddaf2f1dd28493843e5770dab9f4d26d9f73a38495dc99d26293cc81784e5",
+      "type": "auto-remediate",
+      "status": "succeeded",
+      "reason": "rule_source=universal; mitigation_mode=auto",
+      "started_at": "2026-10-21T15:14:05.120Z",
+      "finished_at": "2026-10-21T15:14:05.700Z",
+      "external_ref": null,
+      "verification": {
+        "performed": true,
+        "layers": [
+          "L1"
+        ],
+        "result": "resolved"
+      },
+      "local_ref": "ev:01JAX7K2M4Q8R3VZ5T6YH0B9CD/remediation"
+    }
+  ],
+  "integrity": {
+    "report_seq": 88,
+    "previous_report_sha256": "6c1d0e4a9b7f2c3d5e8a1b4c7d0e3f6a9b2c5d8e1f4a7b0c3d6e9f2a5b8c1d4e"
+  }
+}

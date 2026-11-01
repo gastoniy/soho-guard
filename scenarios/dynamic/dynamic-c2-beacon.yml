@@ -1,0 +1,30 @@
+schema_version: "1.0.0"
+id: DYN-011b
+title: "Beacon C2 o stałym interwale — detekcja statystyczna (RITA)"
+class: dynamic
+attack:
+  attck: ["T1071", "T1095"]
+  timeline_ref: "TrickBot / Glupteba C2 beaconing"
+target: { router_id: r1, profile: ros7 }
+apply:
+  playbook: playbooks/dynamic/enable-covert-forwarding.yml
+generate:
+  from: kali
+  to_endpoint: c2-lab
+  behavior: "beacon stały interwał 60 s"
+  t0_marker: true
+expect:
+  detected: true
+  phase: dynamic
+  rule: policy.dynamic.beacon
+  rule_source: universal
+  posture: compromise-suspected
+  action: alert
+  coverage: full
+  # Ścieżka statystyczna (rita.beacon). MTTD = rotacja Zeeka (do 60 min)
+  # + timer *:05 + import/cykl agenta (~1 min) + dojrzewanie detektora.
+  # Wartość ROBOCZA: 2026-10-28 beacon 60 s osiągnął Critical (1.0) po ~4 h
+  # danych. Do zastąpienia wynikiem krzywej wynik(godziny); osobne warianty
+  # dla interwałów 300 s i 900 s z własnymi budżetami.
+  max_detection_time_s: 18000
+teardown: { reset: true }

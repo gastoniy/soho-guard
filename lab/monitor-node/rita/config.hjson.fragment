@@ -1,0 +1,9 @@
+// Zmiany w /etc/rita/config.hjson względem domyślnego (RITA v5.1.2); kopia: config.hjson.orig
+"update_check_enabled": false,
+"filtering": {
+    "internal_subnets": [ "192.168.20.0/24" ],
+    "never_included_subnets": ["224.0.0.0/4", "255.255.255.255/32", "ff00::/8", "fe80::/10"],   // przyjęte 2026-10-27
+    "filter_external_to_internal": true
+}
+// Walidacja: sudo rita validate --config=/config.hjson
+// Widok:     sudo rita view --stdout --limit=20 <zbiór>   (flagi PRZED nazwą zbioru)

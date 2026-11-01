@@ -1,0 +1,15 @@
+schema_version: "1.0.0"
+id: CTL-001
+title: "Kontrola atrybucji L2 — ruch wyłącznie z drugiego routera"
+class: control
+target: { router_id: r2, profile: ros6 }
+apply: { none: true }
+generate:
+  from: other-router
+  to_endpoint: c2-lab
+  behavior: "beacon generowany z R1; R2 bezczynny"
+  t0_marker: true
+expect:
+  detected: false
+  posture: no-violations
+teardown: { reset: true }

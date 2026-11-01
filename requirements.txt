@@ -1,0 +1,7 @@
+librouteros
+pyyaml
+jsonschema[format-nongpl]>=4.18
+netmiko
+# od C1:
+# clickhouse-connect
+# requests

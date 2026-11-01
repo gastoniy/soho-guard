@@ -1,0 +1,27 @@
+schema_version: "1.0.0"
+id: DYN-011a
+title: "Ukryty kanał C2 — rozbieżność L1 vs L2 (ścieżka szybka)"
+class: dynamic
+attack:
+  attck: ["T1071", "T1095"]
+  timeline_ref: "TrickBot / Glupteba C2 beaconing"
+target: { router_id: r1, profile: ros7 }
+apply:
+  playbook: playbooks/dynamic/enable-covert-forwarding.yml
+generate:
+  from: kali
+  to_endpoint: c2-lab
+  behavior: "kanał C2 ukryty przed self-reportem, powtarzalne sesje"
+  t0_marker: true
+expect:
+  detected: true
+  phase: dynamic
+  rule: integrity.divergence.connections
+  rule_source: universal
+  posture: compromise-suspected
+  action: alert
+  coverage: full
+  # Ścieżka szybka (detektor zeek.conn): bieżące logi Zeeka + L1 w cyklu
+  # agenta, bez importu RITA. Budżet = cykl agenta x min_repeats + zapas.
+  max_detection_time_s: 3600
+teardown: { reset: true }

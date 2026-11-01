@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soho-guard.local/schemas/1.0.0/scenario.schema.json",
+  "title": "soho-guard: manifest scenariusza testowego",
+  "description": "Manifest sterujący harnessem i kontraktem oracle'a (ADR-005, B1). Struktura zamknięta. Reguły międzypolowe zależne od klasy (spójność expect z class) sprawdza manifest_lint.py. Enumy posture/rule_source/phase/rule pochodzą z common.schema.json — wspólne źródło prawdy z raportem.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "title", "class", "target", "apply", "expect"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "id": { "type": "string", "pattern": "^[A-Z]{3,4}-[0-9]{2,}[a-z]?$" },
+    "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+    "class": {
+      "description": "policy/site/benign/dynamic sterują torem detekcji; control to test kontrolny (np. atrybucja L2).",
+      "enum": ["policy", "site", "benign", "dynamic", "control"]
+    },
+    "attack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attck": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$" }
+        },
+        "timeline_ref": { "type": "string", "maxLength": 200 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["router_id", "profile"],
+      "properties": {
+        "router_id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "profile": { "enum": ["ros6", "ros7"] }
+      }
+    },
+    "apply": {
+      "description": "Krok konfiguracyjny harnessu (Ansible). Pusty dla czystego tła.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "playbook": { "type": "string", "pattern": "^playbooks/[a-z0-9_/-]+\\.ya?ml$" },
+        "none": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "required": ["playbook"] },
+        { "required": ["none"], "properties": { "none": { "const": true } } }
+      ]
+    },
+    "generate": {
+      "description": "Krok ruchowy — obowiązkowy dla scenariuszy behawioralnych. Zachowanie emulowane (A2) wobec kontrolowanego endpointu.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to_endpoint", "behavior"],
+      "properties": {
+        "from": { "enum": ["kali", "client", "other-router"] },
+        "to_endpoint": { "$ref": "common.schema.json#/$defs/identifier" },
+        "behavior": { "type": "string", "maxLength": 80 },
+        "t0_marker": { "type": "boolean" }
+      }
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detected", "posture"],
+      "properties": {
+        "detected": { "type": "boolean" },
+        "phase": { "enum": ["onboarding", "static", "dynamic"] },
+        "rule": { "$ref": "common.schema.json#/$defs/ruleId" },
+        "rule_source": { "$ref": "common.schema.json#/$defs/ruleSource" },
+        "posture": { "$ref": "common.schema.json#/$defs/posture" },
+        "action": {
+          "description": "pr-alert = oracle akceptuje open-pr LUB alert.",
+          "enum": ["auto-remediate", "pr-alert", "alert", "none"]
+        },
+        "end_state": { "enum": ["baseline", "unchanged"] },
+        "coverage": { "$ref": "common.schema.json#/$defs/coverage" },
+        "max_detection_time_s": { "description": "Budżet MTTD liczony od t0 harnessu. Wynika z detektora, nie z klasy scenariusza; górna granica = okno zbioru kroczącego RITA (24 h).", "type": "integer", "minimum": 1, "maximum": 86400 }
+      }
+    },
+    "teardown": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "reset": { "type": "boolean" } }
+    }
+  },
+  "allOf": [
+    {
+      "description": "Scenariusz wykrywany wymaga budżetu MTTD.",
+      "if": { "properties": { "expect": { "properties": { "detected": { "const": true } } } } },
+      "then": { "properties": { "expect": { "required": ["max_detection_time_s", "phase", "rule"] } } }
+    },
+    {
+      "description": "Klasa dynamic i control wymagają kroku ruchowego.",
+      "if": { "properties": { "class": { "enum": ["dynamic", "control"] } } },
+      "then": { "required": ["generate"] }
+    }
+  ]
+}

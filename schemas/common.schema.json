@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soho-guard.local/schemas/1.0.0/common.schema.json",
+  "title": "soho-guard: definicje wspólne",
+  "description": "Typy współdzielone przez schemat raportu i schemat stanu (ADR-005).",
+  "$defs": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "timestamp": {
+      "description": "RFC 3339, UTC, milisekundy (R7).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "ulid": {
+      "description": "Identyfikator przebiegu, sortowalny po czasie (R7).",
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "sha256Hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "fingerprint": {
+      "description": "Stały identyfikator naruszenia między przebiegami: sha256(rule \\n path \\n object_key) (R7).",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "policyVersion": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "identifier": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "ruleId": {
+      "description": "Prefiks wyznacza pochodzenie: policy.* i integrity.* = universal, local.* = local.",
+      "type": "string",
+      "pattern": "^(policy|local|integrity)(\\.[a-z0-9][a-z0-9-]*)+$"
+    },
+    "localRuleId": {
+      "type": "string",
+      "pattern": "^local(\\.[a-z0-9][a-z0-9-]*)+$"
+    },
+    "localRef": {
+      "description": "Nieprzezroczysty odnośnik do dowodu w magazynie lokalnym węzła. Rozwiązywalny wyłącznie na węźle (R6).",
+      "type": "string",
+      "pattern": "^ev:[0-9A-HJKMNP-TV-Z]{26}/[a-z0-9][a-z0-9-]*$"
+    },
+    "layer": { "enum": ["L1", "L2", "L3"] },
+    "posture": {
+      "enum": ["no-violations", "site-drift", "policy-violation", "compromise-suspected", "inconclusive"]
+    },
+    "coverage": { "enum": ["full", "partial"] },
+    "severity": { "enum": ["critical", "high", "medium", "low"] },
+    "ruleSource": { "enum": ["universal", "local"] },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "$ref": "#/$defs/timestamp" },
+        "to": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  }
+}

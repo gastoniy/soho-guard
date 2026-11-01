@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soho-guard.local/schemas/1.0.0/policy.schema.json",
+  "title": "soho-guard: plik polityki uniwersalnej",
+  "description": "Reguły warstwy uniwersalnej (policy/, ADR-002). Pochodzenie reguły wyznacza prefiks id (policy.*/integrity.* = universal). severity i ioc są przepisywane do findingu (ADR-005). Reguła statyczna ma check (+ opcjonalnie remediate); reguła dynamiczna ma detector. Wersją całości jest tag repozytorium policy/, nie pole w pliku.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["layer", "rules"],
+  "properties": {
+    "layer": { "enum": ["static", "dynamic"] },
+    "rules": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/rule" } }
+  },
+  "$defs": {
+    "trace": {
+      "description": "Identyfikowalność reguły do realnej kampanii (dla pracy).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeline"],
+      "properties": {
+        "cve": { "type": "array", "items": { "type": "string", "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$" } },
+        "attck": { "type": "array", "items": { "type": "string", "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$" } },
+        "timeline": { "type": "string", "minLength": 3, "maxLength": 200 }
+      }
+    },
+    "predicate": {
+      "description": "Warunek na wartość atrybutu: skalar = równość, albo predykat nazwany.",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object", "additionalProperties": false, "properties": { "one_of": { "type": "array", "minItems": 1, "items": { "type": "string" } } }, "required": ["one_of"] },
+        { "type": "object", "additionalProperties": false, "properties": { "private": { "const": true } }, "required": ["private"] },
+        { "type": "object", "additionalProperties": false, "properties": { "not_empty": { "const": true } }, "required": ["not_empty"] },
+        { "type": "object", "additionalProperties": false, "properties": { "not_one_of": { "type": "array", "minItems": 1, "items": { "type": "string" } } }, "required": ["not_one_of"] }
+      ]
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "severity", "ioc", "phase", "trace"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/ruleId" },
+        "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "severity": { "$ref": "common.schema.json#/$defs/severity" },
+        "ioc": { "type": "boolean" },
+        "phase": { "enum": ["static", "dynamic"] },
+        "trace": { "$ref": "#/$defs/trace" },
+        "check": {
+          "description": "Reguła statyczna: ścieżka konfiguracji + asercja na atrybutach.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "assert"],
+          "properties": {
+            "path": { "type": "string", "pattern": "^/[a-z0-9-]+(/[a-z0-9-]+)*$" },
+            "where": {
+              "description": "Selektor wiersza dla menu-list adresowanych nazwą (np. /ip/service name=winbox). Bez niego asercja dotyczy wszystkich wierszy.",
+              "type": "object", "minProperties": 1,
+              "additionalProperties": { "$ref": "#/$defs/predicate" }
+            },
+            "scope": { "enum": ["single", "each", "none-match"] },
+            "assert": { "type": "object", "minProperties": 1, "additionalProperties": { "$ref": "#/$defs/predicate" } }
+          }
+        },
+        "remediate": {
+          "description": "Wartość SSOT wymuszana przy auto-remediacji (tylko gdy ioc=false).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["set"],
+          "properties": { "set": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } } }
+        },
+        "detector": {
+          "description": "Reguła dynamiczna: odwołanie do detektora warstwy L2/L3.",
+          "enum": ["ti", "zeek.conn", "rita.beacon", "rita.longconn", "dns.dga", "dns.resolver"]
+        },
+        "assert": {
+          "description": "Reguła dynamiczna: próg interpretowany przez detektor.",
+          "type": "object", "minProperties": 1
+        }
+      },
+      "allOf": [
+        {
+          "description": "Reguła statyczna wymaga check; dynamiczna wymaga detector+assert.",
+          "if": { "properties": { "phase": { "const": "static" } } },
+          "then": { "required": ["check"], "not": { "required": ["detector"] } },
+          "else": { "required": ["detector", "assert"], "not": { "required": ["check"] } }
+        },
+        {
+          "description": "Auto-remediacja zabroniona dla wskaźnika kompromitacji (R8/ADR-003).",
+          "if": { "required": ["remediate"] },
+          "then": { "properties": { "ioc": { "const": false } } }
+        }
+      ]
+    }
+  }
+}

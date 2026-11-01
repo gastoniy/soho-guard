@@ -1,0 +1,98 @@
+# Polityka uniwersalna — hardening usług. Wszystkie reguły: ioc=false
+# (luka konfiguracyjna, nie oznaka aktywnej kompromitacji) → auto-remediacja
+# do stanu bezpiecznego. Pochodzenie: §3 timeline'u (mitygacje MikroTik).
+layer: static
+rules:
+  - id: policy.services.socks.disabled
+    title: "SOCKS proxy wyłączony"
+    severity: critical
+    ioc: false
+    phase: static
+    trace:
+      cve: ["CVE-2018-14847"]
+      attck: ["T1090"]
+      timeline: "Coinhive 2018, Glupteba, TrickBot, Mikro Typo — SOCKS4 relay (239k proxy IP)"
+    check: { path: /ip/socks, assert: { enabled: "no" } }
+    remediate: { set: { enabled: "no" } }
+
+  - id: policy.services.telnet.disabled
+    title: "Telnet wyłączony"
+    severity: high
+    ioc: false
+    phase: static
+    trace:
+      attck: ["T1021"]
+      timeline: "default-credential brute force (TheMoon/Faceless)"
+    check: { path: /ip/service, where: { name: telnet }, assert: { disabled: "yes" } }
+    remediate: { set: { disabled: "yes" } }
+
+  - id: policy.services.ftp.disabled
+    title: "FTP wyłączony"
+    severity: medium
+    ioc: false
+    phase: static
+    trace: { timeline: "ekspozycja usług zarządzania — §3 mitygacje" }
+    check: { path: /ip/service, where: { name: ftp }, assert: { disabled: "yes" } }
+    remediate: { set: { disabled: "yes" } }
+
+  - id: policy.services.api-plain.disabled
+    title: "API w postaci jawnej (8728) wyłączone — dozwolone tylko api-ssl"
+    severity: high
+    ioc: false
+    phase: static
+    trace:
+      cve: ["CVE-2026-16347"]
+      timeline: "API bez rate-limitingu — brute force (ICSA-26-209-05)"
+    check: { path: /ip/service, where: { name: api }, assert: { disabled: "yes" } }
+    remediate: { set: { disabled: "yes" } }
+
+  - id: policy.services.smb.disabled
+    title: "SMB wyłączony (jeśli nieużywany)"
+    severity: critical
+    ioc: false
+    phase: static
+    trace:
+      cve: ["CVE-2018-7445"]
+      timeline: "SMB pre-auth buffer overflow — CISA KEV 2022"
+    check: { path: /ip/smb, assert: { enabled: "no" } }
+    remediate: { set: { enabled: "no" } }
+
+  - id: policy.services.bandwidth-server.disabled
+    title: "Bandwidth Test Server wyłączony"
+    severity: medium
+    ioc: false
+    phase: static
+    trace: { timeline: "port 2000 — §3 mitygacje" }
+    check: { path: /tool/bandwidth-server, assert: { enabled: "no" } }
+    remediate: { set: { enabled: "no" } }
+
+  - id: policy.services.proxy.disabled
+    title: "Web proxy wyłączony"
+    severity: high
+    ioc: false
+    phase: static
+    trace:
+      attck: ["T1090"]
+      timeline: "proxy relay (Faceless/AVrecon wzorzec)"
+    check: { path: /ip/proxy, assert: { enabled: "no" } }
+    remediate: { set: { enabled: "no" } }
+
+  - id: policy.services.upnp.disabled
+    title: "UPnP wyłączony"
+    severity: medium
+    ioc: false
+    phase: static
+    trace: { timeline: "automatyczne otwieranie portów — §3 mitygacje" }
+    check: { path: /ip/upnp, assert: { enabled: "no" } }
+    remediate: { set: { enabled: "no" } }
+
+  - id: policy.services.cloud-ddns.disabled
+    title: "MikroTik Cloud DDNS wyłączony"
+    severity: low
+    ioc: false
+    phase: static
+    trace: { timeline: "redukcja powierzchni zarządzania — §3 mitygacje" }
+    # v7.17+: wartości yes|auto ("auto" = wyłączone bez Back To Home); v6: yes|no.
+    # Ograniczenie: "auto" przy włączonym Back To Home oznacza DDNS aktywne.
+    check: { path: /ip/cloud, assert: { ddns-enabled: { one_of: ["no", "auto"] } } }
+    remediate: { set: { ddns-enabled: "no" } }

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soho-guard.local/schemas/1.0.0/state.schema.json",
+  "title": "soho-guard: stan routera",
+  "description": "Plik nadpisywany przy zmianie stanu lub gdy przypada heartbeat (R9, ADR-005). Odzwierciedla stan po akcjach przebiegu.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "site_id", "router_id", "posture", "coverage",
+    "open_findings", "last_run", "last_report", "policy", "heartbeat"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+    "kind": { "const": "state" },
+    "site_id": { "$ref": "common.schema.json#/$defs/identifier" },
+    "router_id": { "$ref": "common.schema.json#/$defs/identifier" },
+    "posture": { "$ref": "common.schema.json#/$defs/posture" },
+    "coverage": { "$ref": "common.schema.json#/$defs/coverage" },
+    "open_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fingerprint", "rule", "rule_source", "severity", "compromise_indicator", "first_seen_at"],
+        "properties": {
+          "fingerprint": { "$ref": "common.schema.json#/$defs/fingerprint" },
+          "rule": { "$ref": "common.schema.json#/$defs/ruleId" },
+          "rule_source": { "$ref": "common.schema.json#/$defs/ruleSource" },
+          "severity": { "$ref": "common.schema.json#/$defs/severity" },
+          "compromise_indicator": {
+            "description": "divergence lub ioc w findingu źródłowym; potrzebne do wyprowadzenia posture (R1) z samego stanu.",
+            "type": "boolean"
+          },
+          "first_seen_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+        }
+      }
+    },
+    "last_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "run_seq", "finished_at"],
+      "properties": {
+        "run_id": { "$ref": "common.schema.json#/$defs/ulid" },
+        "run_seq": { "type": "integer", "minimum": 1 },
+        "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "last_report": {
+      "description": "Czoło łańcucha raportów. null przed pierwszym raportem.",
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_id", "report_seq", "sha256"],
+          "properties": {
+            "run_id": { "$ref": "common.schema.json#/$defs/ulid" },
+            "report_seq": { "type": "integer", "minimum": 1 },
+            "sha256": { "$ref": "common.schema.json#/$defs/sha256Hex" }
+          }
+        }
+      ]
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["universal_version"],
+      "properties": {
+        "universal_version": { "$ref": "common.schema.json#/$defs/policyVersion" }
+      }
+    },
+    "heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["at", "interval_s"],
+      "properties": {
+        "at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "interval_s": { "type": "integer", "minimum": 60, "maximum": 86400 }
+      }
+    }
+  }
+}

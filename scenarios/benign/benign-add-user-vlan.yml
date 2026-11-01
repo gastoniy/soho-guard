@@ -1,0 +1,11 @@
+schema_version: "1.0.0"
+id: BEN-002
+title: "Legalna zmiana dozwolona przez obie polityki (tło)"
+class: benign
+target: { router_id: r2, profile: ros6 }
+apply:
+  playbook: playbooks/benign/add-allowed-firewall-comment.yml
+expect:
+  detected: false
+  posture: no-violations
+teardown: { reset: true }

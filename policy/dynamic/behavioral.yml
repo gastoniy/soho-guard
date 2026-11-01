@@ -1,0 +1,62 @@
+# Progi uniwersalne fazy dynamicznej (ADR-006). Allowlisty i "normalne"
+# instalacji są lokalne (dynamic-baseline.yml) — tu tylko to, co zawsze złe.
+# ioc=true → posture compromise-suspected → akcja alert (R8, bez remediacji).
+layer: dynamic
+rules:
+  - id: policy.dynamic.ti-malicious
+    title: "Ruch do destynacji o reputacji malicious/suspicious"
+    severity: critical
+    ioc: true
+    phase: dynamic
+    trace:
+      attck: ["T1071"]
+      timeline: "C2/proxy do znanych złych IP — TrickBot, Glupteba, FrostArmada"
+    detector: ti
+    assert: { verdict_not_in: ["malicious", "suspicious"] }
+
+  - id: integrity.divergence.connections
+    title: "Rozbieżność: przepływ widoczny w L2, nieobecny w self-reporcie routera"
+    severity: critical
+    ioc: true
+    phase: dynamic
+    trace:
+      timeline: "ukryte sesje C2 — rdzeń modelu zagrożeń (ADR-003)"
+    # Ścieżka szybka (DYN-011a): przepływy z bieżących logów Zeeka zestawiane
+    # z L1 w każdym cyklu agenta — bez czekania na import RITA. min_repeats
+    # chroni przed fałszywą rozbieżnością dla połączeń krótszych niż
+    # interwał odpytywania tablicy połączeń routera (L1 to migawka).
+    detector: zeek.conn
+    assert: { diverges_from_l1: true, min_repeats: 3 }
+
+  - id: policy.dynamic.beacon
+    title: "Beaconing: periodyczne połączenia do stałego celu spoza allowlisty"
+    severity: high
+    ioc: true
+    phase: dynamic
+    trace:
+      attck: ["T1071", "T1095"]
+      timeline: "C2 beacon (TrickBot), dynamic-IP beaconing (Glupteba scheduler)"
+    detector: rita.beacon
+    assert: { score_max: 0.7 }
+
+  - id: policy.dynamic.dga
+    title: "Zapytania DNS o wysokiej entropii (DGA)"
+    severity: high
+    ioc: true
+    phase: dynamic
+    trace:
+      attck: ["T1568.002"]
+      timeline: "phone-home do domen DGA — ENDLESSDOORS"
+    detector: dns.dga
+    assert: { entropy_max: 3.5 }
+
+  - id: policy.dynamic.rogue-resolver
+    title: "Zapytania DNS do resolvera spoza listy instalacji"
+    severity: high
+    ioc: true
+    phase: dynamic
+    trace:
+      attck: ["T1071.004"]
+      timeline: "DNS hijacking → AitM (FrostArmada/Operation Masquerade)"
+    detector: dns.resolver
+    assert: { allowed_from: "sites/{id}/dynamic-baseline.yml#dns.allowed_resolvers" }

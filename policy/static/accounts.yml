@@ -1,0 +1,11 @@
+layer: static
+rules:
+  - id: policy.accounts.default-admin.disabled
+    title: "Domyślne konto admin wyłączone lub usunięte"
+    severity: critical
+    ioc: false
+    phase: static
+    trace:
+      cve: ["CVE-2023-30799"]
+      timeline: "puste domyślne hasła przed 6.49; default admin — FOISted, Mēris (nierotowane creds)"
+    check: { path: /user, scope: none-match, assert: { name: "admin", disabled: "no" } }

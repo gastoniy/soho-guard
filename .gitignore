@@ -1,0 +1,19 @@
+# sekrety i materiał kryptograficzny — NIGDY w repo
+*.key
+*.pem
+*_rsa
+id_*
+vault*.yml
+*.rendered.rsc
+build/
+# dane robocze
+*.pcap
+evidence/
+results/
+# Python
+__pycache__/
+.pytest_cache/
+.venv*/
+*.egg-info/
+# Docs (później)
+docs/

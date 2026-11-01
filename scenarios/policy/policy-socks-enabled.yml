@@ -1,0 +1,20 @@
+schema_version: "1.0.0"
+id: POL-003
+title: "SOCKS proxy włączony na R2 (naruszenie polityki uniwersalnej)"
+class: policy
+attack:
+  attck: ["T1090"]
+  timeline_ref: "Coinhive 2018 / Glupteba / CVE-2018-14847 (SOCKS4 relay)"
+target: { router_id: r2, profile: ros6 }
+apply:
+  playbook: playbooks/policy/socks-enabled.yml
+expect:
+  detected: true
+  phase: static
+  rule: policy.services.socks.disabled
+  rule_source: universal
+  posture: policy-violation
+  action: auto-remediate
+  end_state: baseline
+  max_detection_time_s: 120
+teardown: { reset: true }

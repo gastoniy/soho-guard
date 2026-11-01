@@ -1,0 +1,34 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements-dev.txt
+      - name: Polityka
+        run: python3 tools/policy_lint.py policy
+      - name: Manifesty scenariuszy
+        run: python3 tools/manifest_lint.py scenarios/*/*.yml
+      - name: Przykłady raportów / stanu
+        run: |
+          python3 tools/validate_report.py report examples/report-*.json
+          python3 tools/validate_report.py state examples/state-*.json
+      - name: Testy
+        run: python3 -m pytest tests -q
+      - name: Sekrety w .rsc
+        run: git ls-files '*.rsc' '*.j2' | xargs -r python3 tools/check_rsc_secrets.py
+  gitleaks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }

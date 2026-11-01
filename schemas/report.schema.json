@@ -1,0 +1,472 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soho-guard.local/schemas/1.0.0/report.schema.json",
+  "title": "soho-guard: raport agenta",
+  "description": "Raport niezmienny, emitowany wg R3 (ADR-005). Struktura jest zamknięta (additionalProperties: false na każdym poziomie), aby żadne dane spoza kontraktu, w szczególności identyfikatory hostów LAN, nie mogły trafić do repozytorium. Reguły międzypolowe, których JSON Schema nie wyraża (R1, R2, R6, R8), sprawdza validate.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "run", "target", "policy", "collection",
+    "verdict", "findings", "resolved", "actions", "integrity"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schemaVersion" },
+    "kind": { "const": "report" },
+    "run": { "$ref": "#/$defs/run" },
+    "target": { "$ref": "#/$defs/target" },
+    "policy": { "$ref": "#/$defs/policy" },
+    "collection": { "$ref": "#/$defs/collection" },
+    "verdict": { "$ref": "#/$defs/verdict" },
+    "findings": {
+      "description": "Naruszenia wykryte w tym przebiegu, w stanie sprzed akcji.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "resolved": {
+      "description": "Naruszenia otwarte w poprzednim przebiegu, których ten przebieg już nie wykrył.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/resolvedFinding" }
+    },
+    "actions": {
+      "description": "Akcje podjęte lub zaproponowane w tym przebiegu.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "integrity": { "$ref": "#/$defs/integrity" }
+  },
+  "allOf": [
+    {
+      "description": "R5: w trybie what-if akcje są wyłącznie proponowane.",
+      "if": {
+        "required": ["policy"],
+        "properties": {
+          "policy": {
+            "required": ["evaluation_mode"],
+            "properties": { "evaluation_mode": { "const": "what-if" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actions": { "items": { "properties": { "status": { "const": "proposed" } } } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "run_seq", "trigger", "started_at", "finished_at", "agent_version", "errors"],
+      "properties": {
+        "run_id": { "$ref": "common.schema.json#/$defs/ulid" },
+        "run_seq": { "type": "integer", "minimum": 1 },
+        "trigger": { "enum": ["timer", "manual", "onboarding"] },
+        "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "agent_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "errors": { "type": "array", "items": { "$ref": "#/$defs/runError" } }
+      }
+    },
+    "runError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "code", "message"],
+      "properties": {
+        "stage": { "enum": ["collect-l1", "collect-l2", "collect-l3", "evaluate", "act", "publish"] },
+        "code": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$" },
+        "message": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site_id", "router_id", "address", "transport",
+        "routeros_version_reported", "identity_reported", "profile_used"
+      ],
+      "properties": {
+        "site_id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "router_id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "address": {
+          "type": "string",
+          "anyOf": [{ "format": "ipv4" }, { "format": "ipv6" }, { "format": "hostname" }]
+        },
+        "transport": { "enum": ["api-binary", "ssh"] },
+        "routeros_version_reported": {
+          "description": "Pochodzi z L1, może być sfałszowane (ADR-003, zdolność 2). null, gdy L1 niedostępne.",
+          "type": ["string", "null"],
+          "maxLength": 64
+        },
+        "identity_reported": { "type": ["string", "null"], "maxLength": 255 },
+        "profile_used": {
+          "description": "Profil mapowania ścieżek zastosowany przez agenta, wynikający z inwentarza, nie z deklaracji urządzenia.",
+          "enum": ["ros6", "ros7"]
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["universal_version", "universal_commit", "local_commit", "evaluation_mode", "mitigation_mode"],
+      "properties": {
+        "universal_version": { "$ref": "common.schema.json#/$defs/policyVersion" },
+        "universal_commit": { "$ref": "common.schema.json#/$defs/gitCommit" },
+        "local_commit": { "$ref": "common.schema.json#/$defs/gitCommit" },
+        "evaluation_mode": { "enum": ["enforce", "what-if"] },
+        "mitigation_mode": { "enum": ["auto", "human-in-the-loop"] }
+      }
+    },
+    "layerCollection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "status"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "status": { "enum": ["ok", "degraded", "unavailable"] },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "sources": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/identifier" }
+        },
+        "window": { "$ref": "common.schema.json#/$defs/window" },
+        "note": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["l1", "l2", "l3"],
+      "properties": {
+        "l1": {
+          "description": "R2: L1 jest wymagane zawsze.",
+          "allOf": [
+            { "$ref": "#/$defs/layerCollection" },
+            { "properties": { "required": { "const": true } } }
+          ]
+        },
+        "l2": { "$ref": "#/$defs/layerCollection" },
+        "l3": {
+          "description": "R2: L3 nigdy nie jest wymagane, tylko wzbogaca.",
+          "allOf": [
+            { "$ref": "#/$defs/layerCollection" },
+            { "properties": { "required": { "const": false } } }
+          ]
+        }
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["posture", "coverage", "findings_total", "findings_new", "findings_resolved"],
+      "properties": {
+        "posture": { "$ref": "common.schema.json#/$defs/posture" },
+        "coverage": { "$ref": "common.schema.json#/$defs/coverage" },
+        "findings_total": { "type": "integer", "minimum": 0 },
+        "findings_new": { "type": "integer", "minimum": 0 },
+        "findings_resolved": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed_by", "corroborated_by", "contradicted_by", "divergence"],
+      "properties": {
+        "observed_by": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/layer" }
+        },
+        "corroborated_by": {
+          "type": "array", "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/layer" }
+        },
+        "contradicted_by": {
+          "type": "array", "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/layer" }
+        },
+        "divergence": { "type": "boolean" }
+      }
+    },
+    "valueMap": {
+      "description": "Wartości atrybutów obiektu konfiguracji. null = obiekt nieobecny. Wartości wrażliwe w postaci redacted:sha256:<8 hex> (R6).",
+      "type": ["object", "null"],
+      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9.-]*$" },
+      "additionalProperties": { "type": "string", "maxLength": 1024 }
+    },
+    "stateEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path", "expected", "observed", "local_ref"],
+      "properties": {
+        "type": { "const": "state" },
+        "path": { "type": "string", "pattern": "^/[a-z0-9-]+(/[a-z0-9-]+)*$" },
+        "expected": { "$ref": "#/$defs/valueMap" },
+        "observed": { "$ref": "#/$defs/valueMap" },
+        "local_ref": { "$ref": "common.schema.json#/$defs/localRef" }
+      }
+    },
+    "l1Claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "destination_present"],
+      "properties": {
+        "query": { "type": "string", "pattern": "^/[a-z0-9-]+(/[a-z0-9-]+)*$" },
+        "destination_present": { "type": "boolean" }
+      }
+    },
+    "l2Observation": {
+      "description": "Wyłącznie strona zewnętrzna przepływu. Brak jakiegokolwiek pola dla hosta LAN (R6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "dport", "proto", "flow_count", "bytes_total", "window", "detector", "score"],
+      "properties": {
+        "destination": { "type": "string", "anyOf": [{ "format": "ipv4" }, { "format": "ipv6" }] },
+        "dport": { "type": ["integer", "null"], "minimum": 0, "maximum": 65535 },
+        "proto": { "enum": ["tcp", "udp", "icmp"] },
+        "flow_count": { "type": "integer", "minimum": 1 },
+        "bytes_total": { "type": "integer", "minimum": 0 },
+        "window": { "$ref": "common.schema.json#/$defs/window" },
+        "detector": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)+$" },
+        "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      }
+    },
+    "l3Corroboration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "verdict", "categories"],
+      "properties": {
+        "provider": { "$ref": "common.schema.json#/$defs/identifier" },
+        "verdict": { "enum": ["malicious", "suspicious", "unknown", "benign"] },
+        "categories": {
+          "type": "array", "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/identifier" }
+        }
+      }
+    },
+    "behavioralEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "l2_observation", "local_ref"],
+      "properties": {
+        "type": { "const": "behavioral" },
+        "l1_claim": { "$ref": "#/$defs/l1Claim" },
+        "l2_observation": { "$ref": "#/$defs/l2Observation" },
+        "l3_corroboration": { "$ref": "#/$defs/l3Corroboration" },
+        "local_ref": { "$ref": "common.schema.json#/$defs/localRef" }
+      }
+    },
+    "accessEvidence": {
+      "description": "R4: odrzucone uwierzytelnienie do urządzenia.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "stage", "result", "local_ref"],
+      "properties": {
+        "type": { "const": "access" },
+        "stage": { "const": "l1-auth" },
+        "result": { "const": "rejected" },
+        "local_ref": { "$ref": "common.schema.json#/$defs/localRef" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint", "rule", "rule_source", "also_matched", "phase", "severity",
+        "ioc", "status", "first_seen_at", "trust", "evidence"
+      ],
+      "properties": {
+        "fingerprint": { "$ref": "common.schema.json#/$defs/fingerprint" },
+        "rule": { "$ref": "common.schema.json#/$defs/ruleId" },
+        "rule_source": { "$ref": "common.schema.json#/$defs/ruleSource" },
+        "also_matched": {
+          "description": "Reguły lokalne dopasowane do tej samej obserwacji, gdy precedencję ma reguła uniwersalna.",
+          "type": "array", "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/localRuleId" }
+        },
+        "phase": { "enum": ["onboarding", "static", "dynamic"] },
+        "severity": { "$ref": "common.schema.json#/$defs/severity" },
+        "ioc": { "type": "boolean" },
+        "status": { "enum": ["new", "persisting"] },
+        "first_seen_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "trust": { "$ref": "#/$defs/trust" },
+        "evidence": {
+          "oneOf": [
+            { "$ref": "#/$defs/stateEvidence" },
+            { "$ref": "#/$defs/behavioralEvidence" },
+            { "$ref": "#/$defs/accessEvidence" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "description": "Precedencja universal: finding lokalny nie może mieć dopasowań wtórnych.",
+          "if": { "properties": { "rule_source": { "const": "local" } } },
+          "then": { "properties": { "also_matched": { "maxItems": 0 } } }
+        },
+        {
+          "description": "Rozbieżność wymaga dowodu behawioralnego z deklaracją L1 i L1 wśród warstw sprzecznych.",
+          "if": { "properties": { "trust": { "properties": { "divergence": { "const": true } } } } },
+          "then": {
+            "properties": {
+              "evidence": { "required": ["l1_claim"], "properties": { "type": { "const": "behavioral" } } },
+              "trust": { "properties": { "contradicted_by": { "contains": { "const": "L1" } } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "evidence": { "properties": { "type": { "const": "state" } } } } },
+          "then": { "properties": { "phase": { "enum": ["onboarding", "static"] } } }
+        },
+        {
+          "if": { "properties": { "evidence": { "properties": { "type": { "const": "behavioral" } } } } },
+          "then": { "properties": { "phase": { "const": "dynamic" } } }
+        },
+        {
+          "if": { "properties": { "evidence": { "properties": { "type": { "const": "access" } } } } },
+          "then": { "properties": { "rule": { "const": "integrity.management-access-lost" } } }
+        },
+        {
+          "description": "R4: utrata dostępu do zarządzania.",
+          "if": { "properties": { "rule": { "const": "integrity.management-access-lost" } } },
+          "then": {
+            "properties": {
+              "rule_source": { "const": "universal" },
+              "severity": { "const": "critical" },
+              "ioc": { "const": true },
+              "phase": { "const": "static" },
+              "evidence": { "properties": { "type": { "const": "access" } } }
+            }
+          }
+        }
+      ]
+    },
+    "resolvedFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "rule", "first_seen_at", "resolved_at", "resolved_by"],
+      "properties": {
+        "fingerprint": { "$ref": "common.schema.json#/$defs/fingerprint" },
+        "rule": { "$ref": "common.schema.json#/$defs/ruleId" },
+        "first_seen_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "resolved_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "resolved_by": { "enum": ["remediation", "external-change", "policy-change"] }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "layers", "result"],
+      "properties": {
+        "performed": { "type": "boolean" },
+        "layers": {
+          "description": "Warstwy, którymi potwierdzono wynik. Samo L1 jest wg ADR-003 niezaufane.",
+          "type": "array", "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/layer" }
+        },
+        "result": { "enum": ["resolved", "still-present", "not-verifiable"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "performed": { "const": false } } },
+          "then": { "properties": { "result": { "const": "not-verifiable" }, "layers": { "maxItems": 0 } } },
+          "else": { "properties": { "layers": { "minItems": 1 } } }
+        }
+      ]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id", "fingerprint", "type", "status", "reason",
+        "started_at", "finished_at", "external_ref", "verification", "local_ref"
+      ],
+      "properties": {
+        "action_id": { "type": "string", "pattern": "^A-[0-9]{2,}$" },
+        "fingerprint": { "$ref": "common.schema.json#/$defs/fingerprint" },
+        "type": { "enum": ["auto-remediate", "open-pr", "alert", "none"] },
+        "status": { "enum": ["succeeded", "failed", "proposed", "skipped"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "started_at": { "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/timestamp" }] },
+        "finished_at": { "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/timestamp" }] },
+        "external_ref": { "anyOf": [{ "type": "null" }, { "type": "string", "format": "uri", "maxLength": 2048 }] },
+        "verification": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/verification" }] },
+        "local_ref": { "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/localRef" }] }
+      },
+      "allOf": [
+        {
+          "description": "Brak akcji jest decyzją, nie przeoczeniem: zawsze skipped i z uzasadnieniem.",
+          "if": { "properties": { "type": { "const": "none" } } },
+          "then": { "properties": { "status": { "const": "skipped" } } }
+        },
+        {
+          "description": "Akcja niewykonana nie ma czasu wykonania ani weryfikacji.",
+          "if": { "properties": { "status": { "enum": ["proposed", "skipped"] } } },
+          "then": {
+            "properties": {
+              "started_at": { "type": "null" },
+              "finished_at": { "type": "null" },
+              "verification": { "type": "null" }
+            }
+          }
+        },
+        {
+          "description": "Akcja wykonana ma czas rozpoczęcia i zakończenia.",
+          "if": { "properties": { "status": { "enum": ["succeeded", "failed"] } } },
+          "then": {
+            "properties": {
+              "started_at": { "type": "string" },
+              "finished_at": { "type": "string" }
+            }
+          }
+        },
+        {
+          "description": "Remediacja udana tylko przy zweryfikowanym usunięciu naruszenia.",
+          "if": { "properties": { "type": { "const": "auto-remediate" }, "status": { "const": "succeeded" } } },
+          "then": {
+            "properties": {
+              "verification": {
+                "type": "object",
+                "properties": { "performed": { "const": true }, "result": { "const": "resolved" } }
+              }
+            }
+          }
+        },
+        {
+          "description": "Remediacja nieudana nie może deklarować usunięcia naruszenia.",
+          "if": { "properties": { "type": { "const": "auto-remediate" }, "status": { "const": "failed" } } },
+          "then": {
+            "properties": {
+              "verification": {
+                "anyOf": [
+                  { "type": "null" },
+                  { "type": "object", "properties": { "result": { "enum": ["still-present", "not-verifiable"] } } }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "description": "Otwarty PR musi mieć odnośnik.",
+          "if": { "properties": { "type": { "const": "open-pr" }, "status": { "const": "succeeded" } } },
+          "then": { "properties": { "external_ref": { "type": "string" } } }
+        }
+      ]
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report_seq", "previous_report_sha256"],
+      "properties": {
+        "report_seq": { "type": "integer", "minimum": 1 },
+        "previous_report_sha256": {
+          "description": "SHA-256 bajtów poprzedniego raportu w postaci commitowanej. null wyłącznie dla report_seq = 1.",
+          "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/sha256Hex" }]
+        }
+      },
+      "if": { "properties": { "report_seq": { "const": 1 } } },
+      "then": { "properties": { "previous_report_sha256": { "type": "null" } } },
+      "else": { "properties": { "previous_report_sha256": { "type": "string" } } }
+    }
+  }
+}

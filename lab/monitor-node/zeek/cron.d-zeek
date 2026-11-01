@@ -1,0 +1,2 @@
+# /etc/cron.d/zeek
+*/5 * * * * root /opt/zeek/bin/zeekctl cron

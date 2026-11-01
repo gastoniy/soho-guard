@@ -1,0 +1,60 @@
+# Ekspozycja interfejsów zarządzania. Uniwersalnie: usługi zarządzania
+# nie mogą być publiczne (adres musi być ograniczony do zakresu prywatnego).
+# Konkretny segment MGMT jest lokalny (inventory), więc uniwersalnie
+# sprawdzamy tylko "nie publiczne", nie konkretny adres.
+layer: static
+rules:
+  - id: policy.mgmt.winbox.not-public
+    title: "Winbox (8291) niewystawiony publicznie"
+    severity: critical
+    ioc: false
+    phase: static
+    trace:
+      cve: ["CVE-2018-14847", "CVE-2023-30799"]
+      attck: ["T1133"]
+      timeline: "Winbox na WAN — wektor Coinhive/Glupteba/TrickBot/Mēris/FOISted"
+    check: { path: /ip/service, where: { name: winbox }, assert: { address: { private: true } } }
+
+  - id: policy.mgmt.api-ssl.not-public
+    title: "API-SSL (8729) niewystawione publicznie"
+    severity: critical
+    ioc: false
+    phase: static
+    trace:
+      cve: ["CVE-2026-16347", "CVE-2026-14227"]
+      timeline: "API brute force i kradzież kluczy WireGuard (ICSA-26-209/211)"
+    check: { path: /ip/service, where: { name: api-ssl }, assert: { address: { private: true } } }
+
+  - id: policy.mgmt.www.not-public
+    title: "WebFig (80) niewystawiony publicznie"
+    severity: high
+    ioc: false
+    phase: static
+    trace:
+      cve: ["CVE-2023-30799", "CVE-2017-20149"]
+      timeline: "HTTP na WAN — FOISted, Chimay-Red"
+    check: { path: /ip/service, where: { name: www }, assert: { disabled: "yes" } }
+    remediate: { set: { disabled: "yes" } }
+
+  - id: policy.mgmt.neighbor-discovery.restricted
+    title: "Neighbor Discovery ograniczone do interfejsów zarządzania"
+    severity: high
+    ioc: false
+    phase: static
+    trace:
+      timeline: "TCP 5678 jako indykator Mēris; ND domyślnie na wszystkich interfejsach"
+    # Polityka uniwersalna nie zna nazwy listy zarządzania instalacji, więc
+    # odrzuca listy wbudowane obejmujące wszystkie interfejsy (w tym WAN).
+    # Ograniczenie: własna lista zawierająca WAN przejdzie — sprawdzenie
+    # członków listy wymagałoby korelacji z /interface/list/member.
+    # Przypadek z labu (R1 TMP, 2026-10-30): discover-interface-list=static.
+    check: { path: /ip/neighbor/discovery-settings, assert: { discover-interface-list: { not_one_of: ["all", "static", "dynamic", "!dynamic"] } } }
+
+  - id: policy.mgmt.ssh.strong-crypto
+    title: "SSH wymusza strong-crypto"
+    severity: medium
+    ioc: false
+    phase: static
+    trace: { timeline: "słabe szyfry SSH — §3 mitygacje" }
+    check: { path: /ip/ssh, assert: { strong-crypto: "yes" } }
+    remediate: { set: { strong-crypto: "yes" } }

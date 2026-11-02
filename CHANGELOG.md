@@ -3,6 +3,8 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+
+## [v0.1.2-lab] -- 2026-11-02
 ### Zmienione
 - `inventory.yml`: wersja polityki wyłącznie w `site.yml` repozytorium instalacji; onboarding wpisuje `policy.universal_version_source: site.yml` (pole informacyjne).
 ### Dodane

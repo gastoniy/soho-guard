@@ -147,11 +147,21 @@ def fetch_resources(api, resources=RESOURCES) -> dict:
     return out
 
 
-def dump_export_rsc(host, user, password) -> str:
+def export_connect_params(host, user, password, ssh_key=None) -> dict:
+    """Parametry SSH dla /export. Użytkownik z zaimportowanym kluczem loguje się
+    przez SSH tylko kluczem (RouterOS: always-allow-password-login=no)."""
+    dev = {"device_type": "mikrotik_routeros", "host": host, "username": user}
+    if ssh_key:
+        dev.update(use_keys=True, key_file=ssh_key, allow_agent=False)
+    else:
+        dev["password"] = password
+    return dev
+
+
+def dump_export_rsc(host, user, password, ssh_key=None) -> str:
     """Surowy /export hide-sensitive (SSH). Bez sekretów — bezpieczny do repo."""
     from netmiko import ConnectHandler
-    dev = {"device_type": "mikrotik_routeros", "host": host,
-           "username": user, "password": password}
+    dev = export_connect_params(host, user, password, ssh_key)
     with ConnectHandler(**dev) as conn:
         return conn.send_command("/export terse hide-sensitive")
 
@@ -387,6 +397,7 @@ def main(argv=None):
     ap.add_argument("--verify-tls", action="store_true", help="weryfikuj certyfikat TLS (domyślnie nie — self-signed)")
     ap.add_argument("--ca-file", help="plik CA do weryfikacji certyfikatu api-ssl (wymusza --verify-tls)")
     ap.add_argument("--skip-rsc", action="store_true", help="pomiń SSH /export")
+    ap.add_argument("--ssh-key", help="klucz prywatny SSH dla /export (konto z kluczem, np. monitor)")
     ap.add_argument("--policy-dir", help="katalog policy/ — weryfikacja onboardingu (ADR-003 krok 4)")
     args = ap.parse_args(argv)
     if args.ca_file:
@@ -430,7 +441,7 @@ def main(argv=None):
     print(f"[OK] {site_dir / 'inventory.yml'} (szkielet — uzupełnij CHANGE_ME i zrecenzuj)")
 
     if not args.skip_rsc:
-        rsc = dump_export_rsc(args.host, args.user, args.password)
+        rsc = dump_export_rsc(args.host, args.user, args.password, ssh_key=args.ssh_key)
         # export.rsc (nie baseline.rsc): nazwa odróżnia eksport bez sekretów od
         # wyrenderowanego skryptu baseline z hasłami (pomyłka 2026-10-31).
         (site_dir / "export.rsc").write_text(rsc, encoding="utf-8")

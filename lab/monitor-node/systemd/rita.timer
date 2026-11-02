@@ -1,0 +1,11 @@
+# /etc/systemd/system/rita.timer — 5 min po godzinnej rotacji Zeeka (decyzja 2026-10-28)
+[Unit]
+Description=RITA import co godzinę o *:05
+
+[Timer]
+OnCalendar=*:05
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

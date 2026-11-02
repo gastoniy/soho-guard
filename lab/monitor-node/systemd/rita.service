@@ -1,0 +1,11 @@
+# /etc/systemd/system/rita.service
+[Unit]
+Description=RITA — import kroczący logów Zeeka (zbiór wspólny 'lab')
+Requires=docker.service
+After=docker.service zeek.service
+
+[Service]
+Type=oneshot
+Environment=RITA_DB=lab
+ExecStart=/usr/local/sbin/soho-rita-import.sh
+TimeoutStartSec=600

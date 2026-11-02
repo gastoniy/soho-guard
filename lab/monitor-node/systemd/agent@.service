@@ -1,0 +1,30 @@
+# /etc/systemd/system/agent@.service — jeden cykl agenta dla routera %i (oneshot, ADR-001/005)
+# Włączyć dopiero, gdy istnieje kod agenta (C1):  systemctl enable --now agent@r1.timer
+[Unit]
+Description=soho-guard agent — cykl dla routera %i
+After=network-online.target zeek.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=soho-agent
+Group=soho-agent
+WorkingDirectory=/opt/soho-guard/app
+EnvironmentFile=-/etc/soho-guard/ti.env
+ExecStart=/opt/soho-guard/venv/bin/python -m agent --router %i --once
+TimeoutStartSec=240
+# utwardzenie
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/soho-guard
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native

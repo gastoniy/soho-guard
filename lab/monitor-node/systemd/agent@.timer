@@ -1,0 +1,11 @@
+# /etc/systemd/system/agent@.timer — cykl co 5 min (decyzja 2026-10-30)
+[Unit]
+Description=soho-guard agent — timer dla routera %i
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=10s
+Unit=agent@%i.service
+
+[Install]
+WantedBy=timers.target

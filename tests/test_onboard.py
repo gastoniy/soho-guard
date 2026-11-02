@@ -178,3 +178,10 @@ def test_scaffold_with_router_id():
     inv = ob.scaffold_inventory("lab", st, router_id="r2")
     assert inv["site_id"] == "lab" and inv["router_id"] == "r2"
     assert inv["dynamic_baseline"] == "routers/r2/dynamic-baseline.yml"
+
+
+def test_export_params_key_vs_password():
+    k = ob.export_connect_params("10.100.1.1", "monitor", "pw", ssh_key="/etc/soho-guard/r1/monitor_rsa")
+    assert k["use_keys"] and k["key_file"].endswith("monitor_rsa") and "password" not in k
+    p = ob.export_connect_params("10.100.1.1", "breakglass", "pw")
+    assert p["password"] == "pw" and "key_file" not in p

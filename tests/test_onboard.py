@@ -77,7 +77,7 @@ def test_scaffold_has_changeme_and_autodetect():
     st = ob.build_state(ob.fetch_resources(MockApi(CLEAN)))
     inv = ob.scaffold_inventory("site-042", st)
     assert inv["router_id"] == "CHANGE_ME"
-    assert inv["policy"]["universal_version"] == "CHANGE_ME"
+    assert inv["addressing"]["mgmt_net"] == "CHANGE_ME"          # pole dla człowieka
     assert inv["profile"] == "ros6"                       # autodetekcja
     assert inv["addressing"]["wan_address"] == "192.168.20.22/24"
     assert inv["onboarding"]["firmware_reported"].startswith("6.49.19")
@@ -185,3 +185,9 @@ def test_export_params_key_vs_password():
     assert k["use_keys"] and k["key_file"].endswith("monitor_rsa") and "password" not in k
     p = ob.export_connect_params("10.100.1.1", "breakglass", "pw")
     assert p["password"] == "pw" and "key_file" not in p
+
+
+def test_inventory_policy_points_to_site_yml():
+    st = ob.build_state(ob.fetch_resources(MockApi(CLEAN)))
+    inv = ob.scaffold_inventory("lab", st, router_id="r1")
+    assert inv["policy"] == {"universal_version_source": "site.yml"}

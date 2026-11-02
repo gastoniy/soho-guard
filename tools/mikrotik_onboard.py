@@ -244,8 +244,10 @@ def scaffold_inventory(site_id: str, state: dict, router_id: str | None = None) 
         "site_id": site_id,
         "router_id": router_id or "CHANGE_ME",    # --router-id albo człowiek: r1 / r2 / ...
         "profile": detect_profile(state),         # autodetekcja
+        # Wersja polityki: jedynym źródłem jest site.yml (policy.universal_version)
+        # repozytorium instalacji — decyzja 2026-11-02. Tu wyłącznie informacja.
         "policy": {
-            "universal_version": "CHANGE_ME",     # człowiek: pin wersji policy (ADR-002)
+            "universal_version_source": "site.yml",
         },
         "addressing": {
             "mgmt_net": "CHANGE_ME",

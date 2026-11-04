@@ -3,6 +3,10 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+### Poprawione
+- `policy.dynamic.rogue-resolver`: `allowed_from` jako odwołanie logiczne `dynamic-baseline#dns.allowed_resolvers` zamiast nieaktualnej ścieżki `sites/{id}/…` (plik wskazuje `inventory.yml` → `dynamic_baseline`).
+- Onboarding bez `--router-id`: `dynamic_baseline` = `routers/CHANGE_ME/dynamic-baseline.yml` zamiast `sites/<site_id>/…`.
+- `report.schema.json`: opis wskazuje `tools/validate_report.py` (było `validate.py`).
 
 ## [v0.1.2-lab] -- 2026-11-02
 ### Zmienione

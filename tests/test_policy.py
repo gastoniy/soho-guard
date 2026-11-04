@@ -10,6 +10,14 @@ POLDIR = ROOT / "policy"
 def test_shipped_policy_valid():
     assert pl.lint([str(POLDIR)]) == []
 
+def test_dynamic_refs_are_logical_not_paths():
+    # polityka uniwersalna odwołuje się do dynamic-baseline logicznie (plik z inventory.yml)
+    for f in (POLDIR / "dynamic").glob("*.yml"):
+        for rule in yaml.safe_load(f.read_text(encoding="utf-8"))["rules"]:
+            ref = rule.get("assert", {}).get("allowed_from")
+            if ref is not None:
+                assert ref.startswith("dynamic-baseline#") and "/" not in ref, (rule["id"], ref)
+
 def _one(tmp_path, rule, layer="static"):
     p = tmp_path / "r.yml"
     p.write_text(yaml.safe_dump({"layer": layer, "rules": [rule]}), encoding="utf-8")

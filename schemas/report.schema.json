@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://soho-guard.local/schemas/1.0.0/report.schema.json",
   "title": "soho-guard: raport agenta",
-  "description": "Raport niezmienny, emitowany wg R3 (ADR-005). Struktura jest zamknięta (additionalProperties: false na każdym poziomie), aby żadne dane spoza kontraktu, w szczególności identyfikatory hostów LAN, nie mogły trafić do repozytorium. Reguły międzypolowe, których JSON Schema nie wyraża (R1, R2, R6, R8), sprawdza validate.py.",
+  "description": "Raport niezmienny, emitowany wg R3 (ADR-005). Struktura jest zamknięta (additionalProperties: false na każdym poziomie), aby żadne dane spoza kontraktu, w szczególności identyfikatory hostów LAN, nie mogły trafić do repozytorium. Reguły międzypolowe, których JSON Schema nie wyraża (R1, R2, R6, R8), sprawdza tools/validate_report.py.",
   "type": "object",
   "additionalProperties": false,
   "required": [

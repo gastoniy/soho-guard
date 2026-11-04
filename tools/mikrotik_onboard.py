@@ -256,8 +256,7 @@ def scaffold_inventory(site_id: str, state: dict, router_id: str | None = None) 
             "wan_mac": wan["wan_mac"] or "CHANGE_ME",
         },
         # repo instalacji: routers/<router_id>/ (jedno repo na site, wiele routerów)
-        "dynamic_baseline": (f"routers/{router_id}/dynamic-baseline.yml" if router_id
-                             else f"sites/{site_id}/dynamic-baseline.yml"),
+        "dynamic_baseline": f"routers/{router_id or 'CHANGE_ME'}/dynamic-baseline.yml",
         "local_policy": [],                        # warstwa lokalna (ADR-002); człowiek dodaje
         "onboarding": {
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

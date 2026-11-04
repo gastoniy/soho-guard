@@ -17,3 +17,4 @@ __pycache__/
 *.egg-info/
 # Docs (później)
 docs/
+CLAUDE.md

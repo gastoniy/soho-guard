@@ -59,4 +59,6 @@ rules:
       attck: ["T1071.004"]
       timeline: "DNS hijacking → AitM (FrostArmada/Operation Masquerade)"
     detector: dns.resolver
-    assert: { allowed_from: "sites/{id}/dynamic-baseline.yml#dns.allowed_resolvers" }
+    # Odwołanie logiczne: plik dynamic-baseline routera agent bierze z inventory.yml
+    # (pole dynamic_baseline) — polityka uniwersalna nie zna układu repo instalacji.
+    assert: { allowed_from: "dynamic-baseline#dns.allowed_resolvers" }

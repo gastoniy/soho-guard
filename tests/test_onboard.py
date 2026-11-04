@@ -77,6 +77,7 @@ def test_scaffold_has_changeme_and_autodetect():
     st = ob.build_state(ob.fetch_resources(MockApi(CLEAN)))
     inv = ob.scaffold_inventory("site-042", st)
     assert inv["router_id"] == "CHANGE_ME"
+    assert inv["dynamic_baseline"] == "routers/CHANGE_ME/dynamic-baseline.yml"
     assert inv["addressing"]["mgmt_net"] == "CHANGE_ME"          # pole dla człowieka
     assert inv["profile"] == "ros6"                       # autodetekcja
     assert inv["addressing"]["wan_address"] == "192.168.20.22/24"

@@ -33,7 +33,7 @@ def load_json(name): return json.loads((EX / name).read_text(encoding="utf-8"))
 
 # ---------------- manifest_lint: pozytywne ----------------
 @pytest.mark.parametrize("name", [
-    "policy-socks-enabled.yml", "site-ppp-secret.yml", "benign-add-user-vlan.yml",
+    "policy-socks-enabled.yml", "site-ppp-secret.yml", "benign-firewall-comment.yml",
     "dynamic-c2-beacon.yml", "dynamic-c2-divergence.yml", "control-l2-attribution.yml",
 ])
 def test_examples_valid(name):
@@ -58,7 +58,7 @@ def test_site_must_be_unchanged(tmp_path):
     assert any("end_state" in e for e in ml.validate(_write(tmp_path, d)))
 
 def test_benign_cannot_have_action(tmp_path):
-    d = load_yaml("benign-add-user-vlan.yml"); d["expect"]["action"] = "alert"
+    d = load_yaml("benign-firewall-comment.yml"); d["expect"]["action"] = "alert"
     assert ml.validate(_write(tmp_path, d))
 
 def test_dynamic_requires_generate(tmp_path):
@@ -123,13 +123,13 @@ def test_oracle_dynamic_partial_coverage_fails():
     assert any("coverage" in e for e in oe.oracle_eval(m, rep, load_json("state-r2.json")))
 
 def test_oracle_benign_with_finding_fails():
-    m = load_yaml("benign-add-user-vlan.yml")
+    m = load_yaml("benign-firewall-comment.yml")
     rep = load_json("report-policy-violation.json")   # raport z findingiem new
     st = copy.deepcopy(load_json("state-r2.json")); st["posture"] = "no-violations"
     assert any("nowego findingu" in e for e in oe.oracle_eval(m, rep, st))
 
 def test_oracle_benign_clean_passes():
-    m = load_yaml("benign-add-user-vlan.yml")
+    m = load_yaml("benign-firewall-comment.yml")
     st = copy.deepcopy(load_json("state-r2.json")); st["posture"] = "no-violations"
     assert oe.oracle_eval(m, None, st) == []
 

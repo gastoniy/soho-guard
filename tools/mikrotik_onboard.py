@@ -33,6 +33,7 @@ Zależności: pip install librouteros pyyaml netmiko
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import sys
@@ -77,6 +78,7 @@ RESOURCES = {
     "l2tp_server":           ("interface", "l2tp-server"),
     "ovpn_client":           ("interface", "ovpn-client"),
     "ovpn_server":           ("interface", "ovpn-server"),
+    "ppp_secrets":           ("ppp", "secret"),
     # anty-forensyka
     "logging":               ("system", "logging"),
     # powierzchnia zarządzania / usługi pojedyncze (menu-singletony) — wymagane
@@ -104,15 +106,22 @@ VOLATILE_KEYS = {
     "rx-drop", "rx-error", "tx-drop", "tx-error", "tx-queue-drop",
     "cache-used", "write-sect-since-reboot", "write-sect-total",
     "last-logged-in", "freq-drift", "status", "loop-protect-status",
+    "expires-after",   # odliczanie ważności certyfikatu — zmienia się w każdym cyklu
 }
+
+# Wartości tajne nie trafiają do migawki: baseline-state.yml leży w repozytorium
+# instalacji (R6). Skutek: zmiana samego hasła nie jest wykrywana jako drift.
+# Flagi logiczne (certyfikat: private-key=true) są konfiguracją i zostają.
+# Celowo bez ogólnego "-key": public-key peera WireGuard jest potrzebny do driftu.
+SENSITIVE_KEYS = {"password", "passwd", "secret", "passphrase", "private-key",
+                  "pre-shared-key", "preshared-key", "wpa-pre-shared-key",
+                  "wpa2-pre-shared-key", "authentication-key"}
+SENSITIVE_SUFFIXES = ("-password", "-secret", "-passphrase")
 
 # Wpisy runtime pojawiające się w menu konfiguracyjnych (v7.20: /ip/service
 # pokazuje aktywne sesje, np. sesję samego onboardingu) — nie są konfiguracją.
 def _is_runtime_entry(e: dict) -> bool:
     return str(e.get("connection", "")).lower() in ("true", "yes")
-
-PRIVATE_NETS = ("10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2",
-                "172.30.", "172.31.", "192.168.")
 
 
 # --- transport (leniwe importy: pozwala testować część czystą bez bibliotek) -
@@ -176,13 +185,20 @@ def coerce(v):
     return v
 
 
+def _is_sensitive(key: str, value) -> bool:
+    if isinstance(coerce(value), bool):
+        return False
+    return key in SENSITIVE_KEYS or key.endswith(SENSITIVE_SUFFIXES)
+
+
 def strip_volatile(entry: dict) -> dict:
-    return {k: coerce(v) for k, v in entry.items() if k not in VOLATILE_KEYS}
+    return {k: coerce(v) for k, v in entry.items()
+            if k not in VOLATILE_KEYS and not _is_sensitive(k, v)}
 
 
 def normalize(resource):
     if isinstance(resource, dict):
-        return {k: coerce(resource[k]) for k in sorted(resource) if k not in VOLATILE_KEYS}
+        return dict(sorted(strip_volatile(resource).items()))
     cleaned = [strip_volatile(e) for e in resource if not _is_runtime_entry(e)]
     return sorted(cleaned, key=lambda e: e.get("name") or json.dumps(e, sort_keys=True))
 
@@ -204,7 +220,6 @@ def detect_wan(state: dict) -> dict:
     W v7 `gateway` to adres IP, a interfejs jest w `immediate-gw`
     ("192.168.20.1%ether1-wan"); w v6 bywa nazwa interfejsu. Wynik jest
     KANDYDATEM do potwierdzenia przez człowieka (ADR-003: urządzenie może kłamać)."""
-    import ipaddress
     iface, gw = None, None
     for r in state.get("routes", []):
         if r.get("dst-address") == "0.0.0.0/0" and r.get("active", True) is not False:
@@ -233,7 +248,8 @@ def detect_wan(state: dict) -> dict:
     return {"wan_interface_candidate": iface, "wan_address": addr, "wan_mac": mac}
 
 
-def scaffold_inventory(site_id: str, state: dict, router_id: str | None = None) -> dict:
+def scaffold_inventory(site_id: str, state: dict, router_id: str | None = None,
+                       mgmt_address: str | None = None) -> dict:
     """Szkielet inventory.yml (B4). Autodetekcja + pola CHANGE_ME do uzupełnienia
     przez człowieka. CHANGE_ME celowo blokuje commit bez przeglądu."""
     ident = state.get("identity") or []
@@ -251,13 +267,16 @@ def scaffold_inventory(site_id: str, state: dict, router_id: str | None = None) 
         },
         "addressing": {
             "mgmt_net": "CHANGE_ME",
+            "mgmt_address": mgmt_address or "CHANGE_ME",   # adres api-ssl (też server_hostname TLS)
+            "agent_source": "CHANGE_ME",                   # adres węzła, z którego wychodzi ruch agenta
             # kandydaci z autodetekcji — POTWIERDZIĆ (ADR-004 atrybucja L2):
             "wan_address": wan["wan_address"] or "CHANGE_ME",
             "wan_mac": wan["wan_mac"] or "CHANGE_ME",
         },
         # repo instalacji: routers/<router_id>/ (jedno repo na site, wiele routerów)
         "dynamic_baseline": f"routers/{router_id or 'CHANGE_ME'}/dynamic-baseline.yml",
-        "local_policy": [],                        # warstwa lokalna (ADR-002); człowiek dodaje
+        # warstwa lokalna (ADR-002): plik pisany ręcznie, onboarding go nie tworzy ani nie zmienia
+        "local_policy": f"routers/{router_id or 'CHANGE_ME'}/local-policy.yml",
         "onboarding": {
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "firmware_reported": (res[0].get("version") if res else None),
@@ -282,10 +301,22 @@ def _canon(x):
     return x
 
 
+def _is_private_scope(value) -> bool:
+    """Lista adresów usługi RouterOS (po przecinku): prywatna tylko, gdy KAŻDY wpis
+    jest prywatny. Pusta wartość = dostęp z dowolnego adresu."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        return all(ipaddress.ip_network(p.strip(), strict=False).is_private
+                   for p in value.split(","))
+    except ValueError:
+        return False
+
+
 def _match_predicate(value, cond) -> bool:
     if isinstance(cond, dict):
         if cond.get("private") is True:
-            return isinstance(value, str) and value.startswith(PRIVATE_NETS)
+            return _is_private_scope(value)
         if cond.get("not_empty") is True:
             return value not in (None, "", [], {})
         if "one_of" in cond:
@@ -393,13 +424,16 @@ def main(argv=None):
     ap.add_argument("--site-id", required=True, help="identyfikator instalacji (np. lab)")
     ap.add_argument("--router-id", help="identyfikator routera w instalacji (np. r1); "
                     "katalog wyjściowy = <out-dir>/<router-id>")
-    ap.add_argument("--out-dir", default="./sites")
+    ap.add_argument("--out-dir", default="./routers")
     ap.add_argument("--tls", action="store_true", help="binary API przez TLS (8729) zamiast 8728")
     ap.add_argument("--verify-tls", action="store_true", help="weryfikuj certyfikat TLS (domyślnie nie — self-signed)")
     ap.add_argument("--ca-file", help="plik CA do weryfikacji certyfikatu api-ssl (wymusza --verify-tls)")
     ap.add_argument("--skip-rsc", action="store_true", help="pomiń SSH /export")
     ap.add_argument("--ssh-key", help="klucz prywatny SSH dla /export (konto z kluczem, np. monitor)")
     ap.add_argument("--policy-dir", help="katalog policy/ — weryfikacja onboardingu (ADR-003 krok 4)")
+    ap.add_argument("--baseline-only", action="store_true",
+                    help="zapisz tylko baseline-state.yml; inventory.yml i pozostałe pliki bez zmian "
+                         "(akceptacja legalnej zmiany przez PR)")
     args = ap.parse_args(argv)
     if args.ca_file:
         args.verify_tls = True
@@ -420,8 +454,11 @@ def main(argv=None):
     state = build_state(raw)
     write_yaml(site_dir / "baseline-state.yml", state)
     print(f"[OK] {site_dir / 'baseline-state.yml'}")
+    if args.baseline_only:
+        return
 
-    inv = scaffold_inventory(args.site_id, state, router_id=args.router_id)
+    inv = scaffold_inventory(args.site_id, state, router_id=args.router_id,
+                             mgmt_address=args.host)
 
     if args.policy_dir:
         rules = load_policy(Path(args.policy_dir))

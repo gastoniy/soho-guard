@@ -40,7 +40,7 @@ SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 
 # R6: klucze atrybutów, których wartości muszą być zredagowane.
 SENSITIVE_KEY = re.compile(
-    r"(^|[.-])(password|passwd|secret|passphrase|private-key|pre-shared-key|"
+    r"(^|[.-])(password|passwd|secret|passphrase|private-key|pre-shared-key|preshared-key|"
     r"wpa-pre-shared-key|wpa2-pre-shared-key|authentication-key|key)$"
 )
 REDACTED = re.compile(r"^redacted:sha256:[0-9a-f]{8}$")

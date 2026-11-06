@@ -9,6 +9,8 @@ REL=/opt/soho-guard/releases/$TAG
 if [ ! -d "$REL" ]; then
   git clone --quiet --depth 1 --branch "$TAG" "$REPO" "$REL.tmp"
   git -C "$REL.tmp" verify-tag "$TAG" 2>/dev/null || echo "UWAGA: tag $TAG niepodpisany (ADR-002 zakłada tagi podpisane)"
+  # Po usunięciu .git to jedyne źródło wersji i commitu dla raportu agenta (ADR-005).
+  printf 'tag=%s\ncommit=%s\n' "$TAG" "$(git -C "$REL.tmp" rev-parse HEAD)" > "$REL.tmp/RELEASE"
   rm -rf "$REL.tmp/.git"
   mv "$REL.tmp" "$REL"
 fi

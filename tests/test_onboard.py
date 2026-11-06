@@ -83,6 +83,67 @@ def test_scaffold_has_changeme_and_autodetect():
     assert inv["addressing"]["wan_address"] == "192.168.20.22/24"
     assert inv["onboarding"]["firmware_reported"].startswith("6.49.19")
 
+def test_scaffold_addressing_and_local_policy():
+    st = ob.build_state(ob.fetch_resources(MockApi(CLEAN)))
+    inv = ob.scaffold_inventory("lab", st, router_id="r2", mgmt_address="10.100.2.1")
+    assert inv["addressing"]["mgmt_address"] == "10.100.2.1"
+    assert inv["addressing"]["agent_source"] == "CHANGE_ME"
+    assert inv["local_policy"] == "routers/r2/local-policy.yml"
+    assert ob.scaffold_inventory("lab", st)["addressing"]["mgmt_address"] == "CHANGE_ME"
+
+# --- wartości tajne poza migawką (R6) ---
+@pytest.mark.parametrize("key", ["password", "secret", "private-key", "preshared-key", "ipsec-secret"])
+def test_sensitive_values_dropped(key):
+    assert ob.normalize([{"name": "x", key: "tajne", "profile": "default"}]) == \
+        [{"name": "x", "profile": "default"}]
+
+def test_sensitive_values_dropped_from_singleton():
+    assert ob.normalize({"name": "x", "password": "tajne"}) == {"name": "x"}
+
+def test_private_key_flag_and_public_key_kept():
+    assert ob.normalize([{"name": "c", "private-key": "true"}]) == [{"name": "c", "private-key": True}]
+    assert ob.normalize([{"name": "p", "public-key": "abc"}]) == [{"name": "p", "public-key": "abc"}]
+
+def test_expires_after_is_volatile():
+    assert ob.strip_volatile({"name": "c", "expires-after": "1w"}) == {"name": "c"}
+
+def test_ppp_secrets_collected_without_password():
+    data = dict(CLEAN)
+    data[("ppp", "secret")] = [{".id": "*1", "name": "vpn", "password": "tajne", "service": "any"}]
+    st = ob.build_state(ob.fetch_resources(MockApi(data)))
+    assert st["ppp_secrets"] == [{"name": "vpn", "service": "any"}]
+
+# --- predykat private ---
+@pytest.mark.parametrize("value,expected", [
+    ("10.100.1.0/24", True),
+    ("10.100.1.0/24,192.168.0.0/16", True),
+    ("10.100.1.10", True),
+    ("fd00::/8", True),
+    ("172.16.0.0/12", True),
+    ("10.0.0.0/8,0.0.0.0/0", False),
+    ("0.0.0.0/0", False),
+    ("172.2.0.0/16", False),
+    ("172.200.0.1", False),
+    ("8.8.8.8", False),
+    ("", False),
+    (None, False),
+    ("nie-adres", False),
+])
+def test_private_predicate(value, expected):
+    assert ob._match_predicate(value, {"private": True}) is expected
+
+# --- --baseline-only ---
+def test_baseline_only_keeps_other_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(ob, "connect_api", lambda *a, **k: MockApi(CLEAN))
+    site = tmp_path / "r2"
+    site.mkdir()
+    (site / "inventory.yml").write_text("reczny: wpis\n", encoding="utf-8")
+    ob.main(["--host", "10.100.2.1", "--user", "u", "--password", "p", "--site-id", "lab",
+             "--router-id", "r2", "--out-dir", str(tmp_path), "--baseline-only"])
+    assert (site / "inventory.yml").read_text(encoding="utf-8") == "reczny: wpis\n"
+    assert (site / "baseline-state.yml").exists()
+    assert sorted(p.name for p in site.iterdir()) == ["baseline-state.yml", "inventory.yml"]
+
 # --- weryfikacja onboardingu (ADR-003 krok 4) ---
 def test_clean_device_no_violations():
     st = ob.build_state(ob.fetch_resources(MockApi(CLEAN)))

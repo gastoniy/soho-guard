@@ -113,6 +113,27 @@ def test_ppp_secrets_collected_without_password():
     st = ob.build_state(ob.fetch_resources(MockApi(data)))
     assert st["ppp_secrets"] == [{"name": "vpn", "service": "any"}]
 
+# --- wartości runtime poza migawką (porównanie migawek r1/r2, 2026-11-06) ---
+def test_ntp_runtime_is_volatile():
+    raw = [{"enabled": "true", "servers": "pool.ntp.org", "synced-server": "pool.ntp.org",
+            "synced-stratum": "2", "system-offset": "9.948", "active-server": "78.9.233.189",
+            "last-adjustment": "1ms", "last-update-before": "6m", "last-update-from": "78.9.233.189",
+            "poll-interval": "15m", "server-dns-names": "pool.ntp.org", "primary-ntp": "0.0.0.0"}]
+    assert ob.normalize(raw) == [{"enabled": True, "servers": "pool.ntp.org",
+                                  "server-dns-names": "pool.ntp.org", "primary-ntp": "0.0.0.0"}]
+
+def test_internal_log_port_is_volatile():
+    raw = [{"name": "log", "port": "34287", "proto": "udp", "disabled": "false"}]
+    assert ob.normalize(raw) == [{"name": "log", "proto": "udp", "disabled": False}]
+
+@pytest.mark.parametrize("row", [
+    {"name": "ntp", "port": "123", "proto": "udp"},                  # inny wiersz wewnętrzny
+    {"name": "log", "port": "8080", "proto": "tcp", "address": ""},  # usługa z adresem
+    {"name": "log", "port": "8080"},                                 # bez proto (v6)
+])
+def test_other_service_ports_kept(row):
+    assert ob.normalize([row])[0]["port"] == int(row["port"])
+
 # --- predykat private ---
 @pytest.mark.parametrize("value,expected", [
     ("10.100.1.0/24", True),

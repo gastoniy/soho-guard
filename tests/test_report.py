@@ -73,6 +73,25 @@ def test_lan_check_is_per_installation_not_rfc1918(cs):
     assert errs(cs) == []
 
 
+@pytest.mark.parametrize("version", ["v1.4.0", "v0.1.2-lab", "v0.2.0-lab.rc1", "v0.2.0-lab.rc12"])
+def test_policy_version_accepted(pv, state, version):
+    pv["policy"]["universal_version"] = version
+    state["policy"]["universal_version"] = version
+    assert errs(pv) == []
+    assert validate.validate_state(state) == []
+
+
+@pytest.mark.parametrize("version", ["0.1.2-lab", "v0.1.2-test", "v0.1.2-lab.rc", "v0.1.2-lab.rc1x", "v0.1-lab"])
+def test_policy_version_rejected(pv, version):
+    pv["policy"]["universal_version"] = version
+    assert errs(pv)
+
+
+def test_unredacted_preshared_key_rejected(pv):
+    pv["findings"][1]["evidence"]["observed"]["preshared-key"] = "tajne"
+    assert_fails(errs(pv), "preshared-key")
+
+
 def test_unredacted_secret_rejected(pv):
     pv["findings"][1]["evidence"]["observed"]["password"] = "hunter2"
     assert_fails(errs(pv), "niezredagowana")

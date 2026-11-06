@@ -22,7 +22,11 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
-    "policyVersion": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "policyVersion": {
+      "description": "Tag repozytorium soho-guard: vX.Y.Z-lab lub wersja testowa vX.Y.Z-lab.rcN.",
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(-lab(\\.rc[0-9]+)?)?$"
+    },
     "identifier": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
     "ruleId": {
       "description": "Prefiks wyznacza pochodzenie: policy.* i integrity.* = universal, local.* = local.",

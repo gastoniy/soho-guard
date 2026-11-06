@@ -92,6 +92,9 @@ RESOURCES = {
     "cloud":                 ("ip", "cloud"),
 }
 
+# Telemetria w migawce, poza porównaniem driftu.
+DRIFT_EXCLUDED = {"system_resource"}
+
 # odwrotna mapa: "/ip/socks" -> "socks" (dla weryfikacji względem policy)
 PATH_TO_KEY = {"/" + "/".join(p): k for k, p in RESOURCES.items()}
 

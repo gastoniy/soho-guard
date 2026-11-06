@@ -15,6 +15,8 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Polityka
         run: python3 tools/policy_lint.py policy
+      - name: Polityka lokalna (przykład)
+        run: python3 tools/policy_lint.py --local examples/local-policy.yml
       - name: Manifesty scenariuszy
         run: python3 tools/manifest_lint.py scenarios/*/*.yml
       - name: Przykłady raportów / stanu

@@ -1,0 +1,19 @@
+# Przykład routers/<router_id>/local-policy.yml. Minimalny poprawny plik to samo
+# schema_version: drift na wszystkich zasobach baseline działa bez dalszych wpisów.
+schema_version: "1.0"
+
+drift:
+  overrides:
+    - { resource: ppp_secrets, id: local.ppp.secrets, severity: medium }
+    - { resource: scheduler, id: local.system.scheduler, severity: high }
+  ignore:
+    - resource: firewall_filter
+      attrs: [comment]
+      reason: "Komentarz nie zmienia działania reguły (scenariusz BEN-002)"
+
+rules:
+  - id: local.mgmt.winbox.mgmt-only
+    title: "Winbox tylko z segmentu zarządzania"
+    severity: high
+    reason: "Dostęp administracyjny wyłącznie z VLAN 110"
+    check: { path: /ip/service, where: { name: winbox }, assert: { address: "10.100.1.0/24" } }

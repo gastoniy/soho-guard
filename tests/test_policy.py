@@ -18,6 +18,90 @@ def test_dynamic_refs_are_logical_not_paths():
             if ref is not None:
                 assert ref.startswith("dynamic-baseline#") and "/" not in ref, (rule["id"], ref)
 
+def _local(tmp_path, doc):
+    p = tmp_path / "local-policy.yml"
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    return pl.lint_local([str(p)])
+
+LOCAL_RULE = {
+    "id": "local.mgmt.winbox", "title": "regula testowa", "severity": "high", "reason": "powod",
+    "check": {"path": "/ip/service", "where": {"name": "winbox"}, "assert": {"address": "10.0.0.0/24"}},
+}
+
+def test_local_example_valid():
+    assert pl.lint_local([str(ROOT / "examples" / "local-policy.yml")]) == []
+
+def test_local_minimal_file_valid(tmp_path):
+    assert _local(tmp_path, {"schema_version": "1.0"}) == []
+
+def test_local_empty_file_rejected(tmp_path):
+    p = tmp_path / "local-policy.yml"
+    p.write_text("", encoding="utf-8")
+    assert pl.lint_local([str(p)])
+
+@pytest.mark.parametrize("field,value", [
+    ("ioc", True), ("ioc", False), ("phase", "dynamic"),
+    ("remediate", {"set": {"enabled": "no"}}),
+])
+def test_local_rule_forbidden_fields(tmp_path, field, value):
+    r = copy.deepcopy(LOCAL_RULE); r[field] = value
+    assert _local(tmp_path, {"schema_version": "1.0", "rules": [r]})
+
+@pytest.mark.parametrize("rid", ["policy.services.x", "integrity.x"])
+def test_local_rule_needs_local_prefix(tmp_path, rid):
+    r = copy.deepcopy(LOCAL_RULE); r["id"] = rid
+    assert _local(tmp_path, {"schema_version": "1.0", "rules": [r]})
+
+def test_local_rule_needs_reason(tmp_path):
+    r = copy.deepcopy(LOCAL_RULE); del r["reason"]
+    assert _local(tmp_path, {"schema_version": "1.0", "rules": [r]})
+
+def test_local_rule_path_must_be_collected(tmp_path):
+    r = copy.deepcopy(LOCAL_RULE); r["check"] = {"path": "/ip/x", "assert": {"enabled": "no"}}
+    assert any("nie jest zbierana" in e for e in _local(tmp_path, {"schema_version": "1.0", "rules": [r]}))
+
+def test_local_unquoted_no_rejected(tmp_path):
+    # YAML czyta niecytowane no jako false; wymagany zapis "no"
+    r = copy.deepcopy(LOCAL_RULE); r["check"] = {"path": "/ip/socks", "assert": {"enabled": False}}
+    assert _local(tmp_path, {"schema_version": "1.0", "rules": [r]})
+
+def test_local_rule_drift_prefix_reserved(tmp_path):
+    r = copy.deepcopy(LOCAL_RULE); r["id"] = "local.drift.users"
+    assert any("zarezerwowany" in e for e in _local(tmp_path, {"schema_version": "1.0", "rules": [r]}))
+
+def test_local_duplicate_ids(tmp_path):
+    doc = {"schema_version": "1.0", "rules": [LOCAL_RULE],
+           "drift": {"overrides": [{"resource": "scheduler", "id": LOCAL_RULE["id"], "severity": "high"}]}}
+    assert any("zduplikowane" in e for e in _local(tmp_path, doc))
+
+def test_local_second_override_of_resource(tmp_path):
+    over = [{"resource": "scheduler", "id": "local.a", "severity": "high"},
+            {"resource": "scheduler", "id": "local.b", "severity": "low"}]
+    assert any("drugi override" in e for e in _local(tmp_path, {"schema_version": "1.0", "drift": {"overrides": over}}))
+
+def test_local_override_keeps_default_drift_id(tmp_path):
+    over = [{"resource": "ppp_secrets", "id": "local.drift.ppp-secrets", "severity": "high"}]
+    assert _local(tmp_path, {"schema_version": "1.0", "drift": {"overrides": over}}) == []
+    over[0]["id"] = "local.drift.users"
+    assert _local(tmp_path, {"schema_version": "1.0", "drift": {"overrides": over}})
+
+@pytest.mark.parametrize("resource,fragment", [("nie_ma", "nieznany"), ("system_resource", "poza driftem")])
+def test_local_drift_resource_checked(tmp_path, resource, fragment):
+    doc = {"schema_version": "1.0", "drift": {"ignore": [{"resource": resource, "attrs": ["comment"], "reason": "powod"}]}}
+    assert any(fragment in e for e in _local(tmp_path, doc))
+
+def test_local_ignore_needs_reason_and_attrs(tmp_path):
+    assert _local(tmp_path, {"schema_version": "1.0", "drift": {"ignore": [{"resource": "users", "attrs": ["comment"]}]}})
+    assert _local(tmp_path, {"schema_version": "1.0", "drift": {"ignore": [{"resource": "users", "attrs": [], "reason": "powod"}]}})
+
+def test_local_cli(tmp_path):
+    good = str(ROOT / "examples" / "local-policy.yml")
+    assert pl.main(["--local", good]) == 0
+    bad = tmp_path / "x.yml"
+    bad.write_text("schema_version: '9'\n", encoding="utf-8")
+    assert pl.main(["--local", str(bad)]) == 1
+    assert pl.main(["--local"]) == 2
+
 def _one(tmp_path, rule, layer="static"):
     p = tmp_path / "r.yml"
     p.write_text(yaml.safe_dump({"layer": layer, "rules": [rule]}), encoding="utf-8")

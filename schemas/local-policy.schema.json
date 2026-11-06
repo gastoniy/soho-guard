@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soho-guard.local/schemas/1.0.0/local-policy.schema.json",
+  "title": "soho-guard: polityka lokalna routera",
+  "description": "Plik routers/<router_id>/local-policy.yml pisany ręcznie, onboarding go nie tworzy ani nie zmienia. Polityka lokalna może tylko zaostrzać politykę uniwersalną. Brak pól ioc, remediate i phase jest celowy: reguły lokalne są statyczne, nie są wskaźnikiem kompromitacji i kończą się PR lub alertem (R8). Reguły międzypolowe sprawdza tools/policy_lint.py --local.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "drift": {
+      "description": "Drift obejmuje domyślnie wszystkie zasoby baseline poza telemetrią, jako local.drift.<zasób> z severity medium. Ta sekcja tylko dostosowuje wynik.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "overrides": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["resource", "id", "severity"],
+            "properties": {
+              "resource": { "$ref": "#/$defs/resource" },
+              "id": { "$ref": "common.schema.json#/$defs/localRuleId" },
+              "severity": { "$ref": "common.schema.json#/$defs/severity" }
+            }
+          }
+        },
+        "ignore": {
+          "description": "Atrybuty pomijane wyłącznie przy porównaniu driftu. Nie wpływa na politykę uniwersalną ani reguły lokalne.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["resource", "attrs", "reason"],
+            "properties": {
+              "resource": { "$ref": "#/$defs/resource" },
+              "attrs": {
+                "type": "array", "minItems": 1, "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$" }
+              },
+              "reason": { "$ref": "#/$defs/reason" }
+            }
+          }
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "severity", "reason", "check"],
+        "properties": {
+          "id": { "$ref": "common.schema.json#/$defs/localRuleId" },
+          "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+          "severity": { "$ref": "common.schema.json#/$defs/severity" },
+          "reason": { "$ref": "#/$defs/reason" },
+          "check": {
+            "description": "Ta sama składnia co w regule statycznej polityki uniwersalnej.",
+            "$ref": "policy.schema.json#/$defs/rule/properties/check"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "resource": {
+      "description": "Klucz zasobu z migawki baseline-state.yml, np. firewall_filter.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "reason": { "type": "string", "minLength": 3, "maxLength": 200 }
+  }
+}

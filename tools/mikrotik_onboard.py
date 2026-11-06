@@ -107,6 +107,9 @@ VOLATILE_KEYS = {
     "cache-used", "write-sect-since-reboot", "write-sect-total",
     "last-logged-in", "freq-drift", "status", "loop-protect-status",
     "expires-after",   # odliczanie ważności certyfikatu — zmienia się w każdym cyklu
+    # stan synchronizacji NTP; konfiguracja to servers/server-dns-names/primary-ntp/secondary-ntp
+    "active-server", "last-adjustment", "last-update-before", "last-update-from",
+    "poll-interval", "synced-server", "synced-stratum", "system-offset",
 }
 
 # Wartości tajne nie trafiają do migawki: baseline-state.yml leży w repozytorium
@@ -196,10 +199,19 @@ def strip_volatile(entry: dict) -> dict:
             if k not in VOLATILE_KEYS and not _is_sensitive(k, v)}
 
 
+def _is_internal_log_listener(entry: dict) -> bool:
+    """v7: /ip/service pokazuje wewnętrzne gniazdo logowania z portem efemerycznym.
+    Wiersz zostaje w migawce, ulotny jest tylko jego port."""
+    return entry.get("name") == "log" and "proto" in entry and "address" not in entry
+
+
 def normalize(resource):
     if isinstance(resource, dict):
         return dict(sorted(strip_volatile(resource).items()))
     cleaned = [strip_volatile(e) for e in resource if not _is_runtime_entry(e)]
+    for e in cleaned:
+        if _is_internal_log_listener(e):
+            e.pop("port", None)
     return sorted(cleaned, key=lambda e: e.get("name") or json.dumps(e, sort_keys=True))
 
 

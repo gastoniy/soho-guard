@@ -14,6 +14,7 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 - Predykat `private`: każdy wpis listy adresów musi być prywatny. Wcześniej przechodziło np. `10.0.0.0/8,0.0.0.0/0` i publiczne `172.2.0.0/16`.
 - Walidator R6: `preshared-key` (WireGuard) wymaga redakcji.
 - Onboarding: domyślny `--out-dir` to `./routers` (było `./sites`).
+- Migawka bez stanu synchronizacji NTP i portu efemerycznego wewnętrznego gniazda `log` z `/ip/service` (v7): dawały fałszywy drift.
 - `policy.dynamic.rogue-resolver`: `allowed_from` jako odwołanie logiczne `dynamic-baseline#dns.allowed_resolvers` zamiast nieaktualnej ścieżki `sites/{id}/…` (plik wskazuje `inventory.yml` → `dynamic_baseline`).
 - Onboarding bez `--router-id`: `dynamic_baseline` = `routers/CHANGE_ME/dynamic-baseline.yml` zamiast `sites/<site_id>/…`.
 - `report.schema.json`: opis wskazuje `tools/validate_report.py` (było `validate.py`).

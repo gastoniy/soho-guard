@@ -23,7 +23,7 @@ from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent.normalize import DRIFT_EXCLUDED, PATH_TO_KEY, RESOURCES  # noqa: E402
+from agent.normalize import DRIFT_EXCLUDED, DRIFT_PREFIX, PATH_TO_KEY, RESOURCES, drift_rule_id  # noqa: E402
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 
@@ -40,7 +40,6 @@ def _validator(schema="policy.schema.json"):
 
 _V = _validator()
 _V_LOCAL = _validator("local-policy.schema.json")
-DRIFT_PREFIX = "local.drift."
 
 
 def _files(args):
@@ -83,11 +82,6 @@ def lint(paths) -> list[str]:
             if not r["trace"].get("timeline"):
                 issues.append(f"{path.name}: {rid} bez trace.timeline")
     return issues
-
-
-def drift_rule_id(resource: str) -> str:
-    """Domyślny identyfikator reguły driftu zasobu."""
-    return DRIFT_PREFIX + resource.replace("_", "-")
 
 
 def _lint_local_doc(name: str, doc: dict) -> list[str]:

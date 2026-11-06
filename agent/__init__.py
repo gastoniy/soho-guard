@@ -1,1 +1,1 @@
-"""Agent soho-guard (C1) — kod powstanie w etapie 6."""
+"""Agent soho-guard: monitorowanie routera, jeden cykl na uruchomienie (ADR-001)."""

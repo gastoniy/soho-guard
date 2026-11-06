@@ -11,7 +11,7 @@ User=soho-agent
 Group=soho-agent
 WorkingDirectory=/opt/soho-guard/app
 EnvironmentFile=-/etc/soho-guard/ti.env
-ExecStart=/opt/soho-guard/venv/bin/python -m agent --router %i --once
+ExecStart=/opt/soho-guard/venv/bin/python -m agent --router %i --once --trigger timer
 TimeoutStartSec=240
 # utwardzenie
 NoNewPrivileges=yes

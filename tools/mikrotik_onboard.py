@@ -54,6 +54,7 @@ from agent.normalize import (  # noqa: E402,F401
     normalize,
     strip_volatile,
 )
+from agent.static_eval import check_rule  # noqa: E402
 
 # --- transport (leniwe importy: pozwala testować część czystą bez bibliotek) -
 def connect_api(host, user, password, tls=False, port=None, verify=False, ca_file=None):
@@ -176,39 +177,16 @@ def scaffold_inventory(site_id: str, state: dict, router_id: str | None = None,
 
 # --- weryfikacja względem policy/ (ADR-003 krok 4) ---------------------------
 def verify_against_policy(state: dict, policy_rules: list) -> list:
-    """Minimalna weryfikacja fazy 0': które reguły STATYCZNE policy/ są już
-    naruszone w chwili adopcji. Pełny silnik ewaluacji to agent (C1); tu obsługa
-    asercji na pojedynczych menu (enabled/disabled/private/one_of/not_one_of/not_empty).
-    Zwraca listę naruszeń do przeglądu człowieka."""
+    """Które reguły STATYCZNE policy/ są naruszone w chwili adopcji (ewaluator wspólny
+    z agentem). Zwraca listę naruszeń do przeglądu człowieka."""
     findings = []
     for rule in policy_rules:
         if rule.get("phase") != "static" or "check" not in rule:
             continue
-        chk = rule["check"]
-        key = PATH_TO_KEY.get(chk["path"])
-        if key is None or key not in state:
-            continue
-        data = state[key]
-        entries = data if isinstance(data, list) else [data]
-        where = chk.get("where")
-        if where:
-            entries = [e for e in entries if all(_match_predicate(e.get(k), v) for k, v in where.items())]
-        if not entries:
-            continue
-        for prop, cond in chk["assert"].items():
-            # none-match: naruszenie, gdy ISTNIEJE wpis pasujący do wszystkich warunków
-            if chk.get("scope") == "none-match":
-                for e in entries:
-                    if all(_match_predicate(e.get(p2), c2) for p2, c2 in chk["assert"].items()):
-                        findings.append({"rule": rule["id"], "severity": rule["severity"],
-                                         "detail": f"istnieje wpis pasujący: {chk['assert']}"})
-                        break
-                break
-            # domyślnie: naruszenie, gdy KTÓRYKOLWIEK wpis nie spełnia asercji
-            bad = [e for e in entries if not _match_predicate(e.get(prop), cond)]
-            if bad:
-                findings.append({"rule": rule["id"], "severity": rule["severity"],
-                                 "detail": f"{chk['path']} {prop}={bad[0].get(prop)!r}, oczekiwano {cond!r}"})
+        for v in check_rule(rule, state).violations:
+            detail = (f"istnieje wpis pasujący: {v.observed}" if v.expected is None else
+                      f"{v.path} {v.object_key}: {v.observed}, oczekiwano {v.expected}")
+            findings.append({"rule": v.rule, "severity": v.severity, "detail": detail})
     return findings
 
 

@@ -179,6 +179,16 @@ def test_compromise_indicator_cannot_be_auto_remediated(cs):
     assert_fails(errs(cs), "R8")
 
 
+def test_what_if_allows_skipped_but_not_executed(pv):
+    pv["policy"]["evaluation_mode"] = "what-if"
+    a = pv["actions"][0]
+    a.update(type="none", status="skipped", started_at=None, finished_at=None, verification=None, local_ref=None)
+    assert errs(pv) == []
+    a.update(type="auto-remediate", status="failed", started_at="2026-10-21T15:14:05.120Z",
+             finished_at="2026-10-21T15:14:05.700Z")
+    assert errs(pv)
+
+
 def test_new_finding_requires_exactly_one_action(pv):
     pv["actions"] = []
     assert_fails(errs(pv), "dokładnie jednej akcji")

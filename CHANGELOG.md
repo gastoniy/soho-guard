@@ -3,6 +3,8 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+
+## [v0.2.0-lab] — 2026-11-06
 ### Zmienione
 - Schemat raportu, R5: w trybie what-if akcja może mieć status `proposed` lub `skipped` (rozszerzenie zgodne wstecz); nadal żadna nie może być wykonana.
 - Onboarding: `verify_against_policy` korzysta z ewaluatora agenta; naruszenie zgłaszane per obiekt.

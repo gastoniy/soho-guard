@@ -22,8 +22,8 @@ import yaml
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from mikrotik_onboard import DRIFT_EXCLUDED, PATH_TO_KEY, RESOURCES  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent.normalize import DRIFT_EXCLUDED, PATH_TO_KEY, RESOURCES  # noqa: E402
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 

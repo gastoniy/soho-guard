@@ -1,11 +1,11 @@
-"""Mitygacja: wybór akcji wg R8. Wykonanie remediacji dochodzi w iteracji 3, teraz
-akcje są wyłącznie opisane."""
+"""Mitygacja: wybór akcji wg R8. Wykonanie akcji dochodzi w iteracji 3, teraz są
+wyłącznie opisane."""
 from __future__ import annotations
 
 from agent.findings import Finding
 
 
-def _plan(finding: Finding) -> tuple[str, str, str]:
+def _plan(finding: Finding, dry_run: bool) -> tuple[str, str, str]:
     v = finding.violation
     if v.ioc:
         return "alert", "proposed", "R8: wskaźnik kompromitacji, wyłącznie alert"
@@ -13,17 +13,19 @@ def _plan(finding: Finding) -> tuple[str, str, str]:
         return "open-pr", "proposed", "R8: reguła lokalna, decyzja człowieka przez PR"
     if v.remediate:
         values = ", ".join(f"{k}={val}" for k, val in sorted(v.remediate["set"].items()))
-        return "auto-remediate", "proposed", f"dry-run: remediacja niewykonana, planowane {values}"[:500]
+        if dry_run:
+            return "auto-remediate", "proposed", f"dry-run: remediacja niewykonana, planowane {values}"[:500]
+        return "auto-remediate", "skipped", f"--no-remediate: remediacja wyłączona, planowane {values}"[:500]
     return "none", "skipped", "reguła uniwersalna bez remediate, naruszenie widoczne w raporcie"
 
 
-def plan_actions(findings: list[Finding]) -> list[dict]:
+def plan_actions(findings: list[Finding], dry_run: bool = True) -> list[dict]:
     """Dokładnie jedna akcja na nowy finding; utrzymujące się nie dostają kolejnej."""
     actions = []
     for finding in findings:
         if finding.status != "new":
             continue
-        kind, status, reason = _plan(finding)
+        kind, status, reason = _plan(finding, dry_run)
         actions.append({
             "action_id": f"A-{len(actions) + 1:02d}",
             "fingerprint": finding.fingerprint,

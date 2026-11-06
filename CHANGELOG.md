@@ -3,6 +3,13 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+### Dodane
+- Agent, iteracja 2: publikacja do repo instalacji (`--no-remediate`, opcjonalnie `--publish-branch test/<nazwa>`). Raport przy zdarzeniu (R3), stan przy zmianie lub co `interval_s` (R9, heartbeat). Bez flag agent nadal kończy się błędem: remediacja powstaje w iteracji 3.
+- Niewysłane dane czekają w lokalnym outboxie (`/var/lib/soho-guard/publish/<gałąź>/<router>/`), a commit powstaje dopiero przy publikacji, w tymczasowym worktree. Dane routera wychodzą wyłącznie przez jego łącze.
+- Kody błędów `publish.sync-failed` i `publish.push-failed`; po utracie danych lokalnych łańcuch raportów jest kontynuowany z opublikowanego stanu.
+### Zmienione
+- `--no-remediate`: `evaluation_mode: enforce`, `auto-remediate` ma status `skipped`, a `open-pr` i `alert` status `proposed`.
+- Oczekiwanie na blokadę klonu `site-lab` jest ograniczone czasowo (45 s).
 
 ## [v0.2.0-lab] — 2026-11-06
 ### Zmienione

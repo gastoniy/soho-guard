@@ -36,7 +36,7 @@
   },
   "allOf": [
     {
-      "description": "R5: w trybie what-if akcje są wyłącznie proponowane.",
+      "description": "R5: w trybie what-if żadna akcja nie jest wykonywana: tylko proposed lub skipped.",
       "if": {
         "required": ["policy"],
         "properties": {
@@ -48,7 +48,7 @@
       },
       "then": {
         "properties": {
-          "actions": { "items": { "properties": { "status": { "const": "proposed" } } } }
+          "actions": { "items": { "properties": { "status": { "enum": ["proposed", "skipped"] } } } }
         }
       }
     }

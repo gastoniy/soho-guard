@@ -61,6 +61,11 @@ RESOURCES = {
 
 # Telemetria w migawce, poza porównaniem driftu.
 DRIFT_EXCLUDED = {"system_resource"}
+DRIFT_PREFIX = "local.drift."
+
+# Menu z jednym wierszem ustawień: obiekt nie ma własnej nazwy.
+SINGLETONS = {"identity", "dns", "socks", "neighbor_discovery", "ssh", "smb", "bandwidth_server",
+              "proxy", "upnp", "cloud", "ntp_client", "system_resource"}
 
 # odwrotna mapa: "/ip/socks" -> "socks" (dla weryfikacji względem policy)
 PATH_TO_KEY = {"/" + "/".join(p): k for k, p in RESOURCES.items()}
@@ -97,17 +102,25 @@ def _is_runtime_entry(e: dict) -> bool:
     return str(e.get("connection", "")).lower() in ("true", "yes")
 
 
+def drift_rule_id(resource: str) -> str:
+    """Domyślny identyfikator reguły driftu zasobu."""
+    return DRIFT_PREFIX + resource.replace("_", "-")
+
+
 # --- odczyt ---------------------------------------------------------------
-def fetch_resources(api, resources=RESOURCES) -> dict:
+def fetch_resources(api, resources=RESOURCES, failed: dict | None = None) -> dict:
     """api: obiekt z metodą .path(*parts) -> iterowalne dict-y (librouteros).
     Zwraca surowy stan per klucz. Menu nieistniejące na danej wersji (np.
-    wireguard na v6) jest pomijane — różnice v6/v7 obsłużone naturalnie."""
+    wireguard na v6) jest pomijane — różnice v6/v7 obsłużone naturalnie.
+    failed: zbiera błędy inne niż brak menu; to one obniżają pokrycie."""
     out = {}
     for key, parts in resources.items():
         try:
             out[key] = [dict(x) for x in api.path(*parts)]
         except Exception as exc:                       # noqa: BLE001 (różne wyjątki API)
             print(f"[WARN] {'/'.join(parts)}: {exc}", file=sys.stderr)
+            if failed is not None and "no such command" not in str(exc).lower():
+                failed[key] = str(exc)[:200]
     return out
 
 

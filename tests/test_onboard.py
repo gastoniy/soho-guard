@@ -114,6 +114,10 @@ def test_ppp_secrets_collected_without_password():
     assert st["ppp_secrets"] == [{"name": "vpn", "service": "any"}]
 
 # --- wartości runtime poza migawką (porównanie migawek r1/r2, 2026-11-06) ---
+def test_scheduler_runtime_is_volatile():
+    row = {"name": "z", "interval": "1d", "start-time": "19:34:25", "next-run": "nov/08 19:34:25", "run-count": "3"}
+    assert ob.strip_volatile(row) == {"name": "z", "interval": "1d", "start-time": "19:34:25"}
+
 def test_ntp_runtime_is_volatile():
     raw = [{"enabled": "true", "servers": "pool.ntp.org", "synced-server": "pool.ntp.org",
             "synced-stratum": "2", "system-offset": "9.948", "active-server": "78.9.233.189",

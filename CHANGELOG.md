@@ -15,6 +15,7 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 - Raport jest walidowany (R10) także przed akcjami, żeby router nie zmienił się w przebiegu z niepoprawnym dokumentem.
 - Migawka v7 bez wierszy-gniazd z `/ip/service` (`proto` bez `address`, np. `dhcp`, `ntp`, włączony `socks`): to stan działania, a nie konfiguracja. Włączony SOCKS dawał dodatkowy, fałszywy drift i błędny PR. Wiersze w istniejącym `baseline-state.yml` są pomijane przy wczytaniu. Nowe gniazdo nie jest driftem, tak jak dotąd na v6.
 - Podsumowanie cyklu: licznik `naprawione=`.
+- Migawka bez `next-run` i `run-count` (`/system/scheduler`, `/system/script`): stan wykonania zadania. Zaakceptowane zadanie dawało nowy drift po każdym uruchomieniu. Wartości w istniejącym `baseline-state.yml` są pomijane przy wczytaniu.
 
 ## [v0.3.0-lab] — 2026-11-07
 ### Dodane

@@ -85,6 +85,8 @@ VOLATILE_KEYS = {
     # stan synchronizacji NTP; konfiguracja to servers/server-dns-names/primary-ntp/secondary-ntp
     "active-server", "last-adjustment", "last-update-before", "last-update-from",
     "poll-interval", "synced-server", "synced-stratum", "system-offset",
+    # stan wykonania zadania: zmienia się przy każdym uruchomieniu
+    "next-run", "run-count",
 }
 
 # Wartości tajne nie trafiają do migawki: baseline-state.yml leży w repozytorium

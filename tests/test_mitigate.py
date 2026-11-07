@@ -14,6 +14,7 @@ from test_agent import MockApi, ROOT, SECRET, SOCKS_ON, SOCKS_RULE, git, lab, ro
 from test_publish import remote  # noqa: F401
 from agent import __main__ as cli
 from agent import proposal
+from agent.normalize import build_state
 from agent.static_eval import evaluate, ignored_attrs
 
 DRIFT_RULE = "local.drift.scheduler"
@@ -187,6 +188,38 @@ def test_stale_listener_rows_in_baseline_are_not_drift(full):
     sim = Sim(router())
     assert full.full(sim) == 0
     assert full.reports()[-1]["findings"] == []
+
+
+def accept_task(full, **attrs):
+    """Baseline po scaleniu PR ze starszą wersją agenta: zawiera też stan wykonania zadania."""
+    path = full.lab.site / "routers" / "r2" / "baseline-state.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["scheduler"] = [{"name": "zadanie", "interval": "1h", **attrs}]
+    full.operator_commit("routers/r2/baseline-state.yml", yaml.safe_dump(doc))
+
+
+def test_task_execution_is_not_drift(full):
+    """Zaakceptowane zadanie wykonało się: zmienia się tylko stan wykonania."""
+    accept_task(full, **{"next-run": "nov/08 19:34:25", "run-count": 0})
+    ran = [{**TASK[0], "next-run": "nov/09 19:34:25", "run-count": "1"}]
+    assert full.full(Sim(router(system__scheduler=ran))) == 0
+    rep = full.reports()[-1]
+    assert rep["findings"] == [] and rep["actions"] == []
+
+
+def test_task_configuration_change_is_still_drift(full):
+    accept_task(full)
+    changed = [{**TASK[0], "interval": "5m", "next-run": "nov/09 19:34:25", "run-count": "1"}]
+    assert full.full(Sim(router(system__scheduler=changed))) == 0
+    assert [f["rule"] for f in full.reports()[-1]["findings"]] == ["local.drift.scheduler"]
+
+
+def test_proposal_omits_task_execution_state():
+    row = {"name": "zadanie", "interval": "1h", "next-run": "nov/09 19:34:25", "run-count": "1"}
+    state = build_state({"scheduler": [row]})
+    violation = next(v for v in evaluate(state, [], {}, {"scheduler": []}).violations if v.drift)
+    doc = yaml.safe_load(proposal.render("scheduler: []\n", state, [violation], {}))
+    assert doc["scheduler"] == [{"name": "zadanie", "interval": "1h"}]
 
 
 def test_listener_row_with_rule_name_is_not_selected(full):

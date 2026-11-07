@@ -114,6 +114,10 @@ def test_ppp_secrets_collected_without_password():
     assert st["ppp_secrets"] == [{"name": "vpn", "service": "any"}]
 
 # --- wartości runtime poza migawką (porównanie migawek r1/r2, 2026-11-06) ---
+def test_scheduler_runtime_is_volatile():
+    row = {"name": "z", "interval": "1d", "start-time": "19:34:25", "next-run": "nov/08 19:34:25", "run-count": "3"}
+    assert ob.strip_volatile(row) == {"name": "z", "interval": "1d", "start-time": "19:34:25"}
+
 def test_ntp_runtime_is_volatile():
     raw = [{"enabled": "true", "servers": "pool.ntp.org", "synced-server": "pool.ntp.org",
             "synced-stratum": "2", "system-offset": "9.948", "active-server": "78.9.233.189",
@@ -122,17 +126,23 @@ def test_ntp_runtime_is_volatile():
     assert ob.normalize(raw) == [{"enabled": True, "servers": "pool.ntp.org",
                                   "server-dns-names": "pool.ntp.org", "primary-ntp": "0.0.0.0"}]
 
-def test_internal_log_port_is_volatile():
-    raw = [{"name": "log", "port": "34287", "proto": "udp", "disabled": "false"}]
-    assert ob.normalize(raw) == [{"name": "log", "proto": "udp", "disabled": False}]
+@pytest.mark.parametrize("row", [
+    {"name": "log", "port": "34287", "proto": "udp", "disabled": "false"},
+    {"name": "ntp", "port": "123", "proto": "udp"},
+    {"name": "socks", "port": "1080", "proto": "tcp", "disabled": "false"},
+])
+def test_service_listener_is_outside_snapshot(row):
+    assert ob.build_state({"services": [row]}) == {"services": []}
 
 @pytest.mark.parametrize("row", [
-    {"name": "ntp", "port": "123", "proto": "udp"},                  # inny wiersz wewnętrzny
-    {"name": "log", "port": "8080", "proto": "tcp", "address": ""},  # usługa z adresem
-    {"name": "log", "port": "8080"},                                 # bez proto (v6)
+    {"name": "winbox", "port": "8291", "proto": "tcp", "address": ""},   # usługa v7
+    {"name": "winbox", "port": "8291", "address": ""},                   # usługa v6
 ])
-def test_other_service_ports_kept(row):
-    assert ob.normalize([row])[0]["port"] == int(row["port"])
+def test_configured_service_is_kept(row):
+    assert ob.build_state({"services": [row]})["services"][0]["port"] == 8291
+
+def test_proto_without_address_kept_in_other_resources():
+    assert ob.build_state({"scheduler": [{"name": "x", "proto": "tcp"}]})["scheduler"] == [{"name": "x", "proto": "tcp"}]
 
 # --- predykat private ---
 @pytest.mark.parametrize("value,expected", [

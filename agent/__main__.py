@@ -1,4 +1,4 @@
-"""CLI i cykl agenta: python -m agent --router r1 --once (--dry-run | --no-remediate)."""
+"""CLI i cykl agenta: python -m agent --router r1 --once [--dry-run | --no-remediate]."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ from agent import evidence, l1_router, mitigate, policy, report
 from agent.config import ConfigError, Context, Paths, load_context
 from agent.findings import ACCESS_LOST_RULE, access_lost_violation, fingerprint, reconcile
 from agent.publish import MAIN, Publisher, PublishError, should_publish, state_digest
-from agent.static_eval import EvalResult, evaluate
+from agent.static_eval import EvalResult, evaluate, ignored_attrs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from validate_report import validate_report, validate_state  # noqa: E402
@@ -83,7 +83,8 @@ def _publish(publisher: Publisher, state_path: Path, state_doc: dict, runtime_do
 
 
 def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.connect_monitor,
-              publisher: Publisher | None = None, sync_error: str | None = None) -> int:
+              publisher: Publisher | None = None, sync_error: str | None = None,
+              mode: str = mitigate.DRY_RUN, remediate_connector=l1_router.connect_remediate) -> int:
     """Bez publishera to --dry-run: tylko zapis lokalny, własny łańcuch what-if."""
     started = clock()
     run_id = report.new_ulid(started)
@@ -153,48 +154,73 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         absorbed={fingerprint(*item) for item in result.absorbed},
         universal_changed=prev_version != ctx.release_tag,
         local_changed=prev_digest != ctx.local_digest,
+        remediation_attempted=set(runtime.get("remediation_attempted", [])),
     )
-    actions = mitigate.plan_actions(reconciled.findings, dry_run=publisher is None)
+    hold = None
+    if mode == mitigate.FULL and publisher.branch == MAIN and ctx.universal_pin != ctx.release_tag:
+        hold = "wersja polityki niezgodna z site.yml, zmiany na routerze wstrzymane"
+    actions = mitigate.plan_actions(reconciled.findings, mode, hold)
     collection = _collection(l1, notes)
     coverage = report.derive_coverage(collection)
-    posture = report.state_posture(reconciled.open_findings, coverage)
-    error_kinds = sorted({f"{e['stage']}:{e['code']}" for e in errors})
 
-    finished = clock()
-    run = {
-        "run_id": run_id,
-        "run_seq": (prev_state or {}).get("last_run", {}).get("run_seq", 0) + 1,
-        "trigger": ctx.trigger,
-        "started_at": report.timestamp(started),
-        "finished_at": report.timestamp(finished),
-        "agent_version": ctx.agent_version,
-        "errors": errors,
-    }
-
-    wants_report = report.should_report(prev_state, posture, coverage, reconciled, actions,
-                                        error_kinds, runtime.get("error_kinds", []))
-    report_doc = report_bytes = None
-    last_report = (prev_state or {}).get("last_report")
-    if wants_report:
-        report_doc = report.build_report(
-            ctx, run=run, identity=_first(l1.state, "identity", "name"),
-            version=_first(l1.state, "system_resource", "version"), collection=collection,
-            reconciled=reconciled, actions=actions, prev_state=prev_state,
-            evaluation_mode="what-if" if publisher is None else "enforce")
-        report_bytes = report.to_bytes(report_doc)
-        last_report = {"run_id": run_id, "report_seq": report_doc["integrity"]["report_seq"],
-                       "sha256": report.sha256_hex(report_bytes)}
-    state_doc = report.build_state_doc(ctx, run=run, posture=posture, coverage=coverage,
-                                       open_findings=reconciled.open_findings, last_report=last_report)
-
-    # R10: nic nie zostaje zapisane, jeśli dokument łamie kontrakt.
-    problems = validate_state(state_doc)
-    if report_doc is not None:
-        problems += validate_report(report_doc)
-    if problems:
+    def assemble():
+        posture = report.state_posture(reconciled.open_findings, coverage)
+        error_kinds = sorted({f"{e['stage']}:{e['code']}" for e in errors})
+        run = {
+            "run_id": run_id,
+            "run_seq": (prev_state or {}).get("last_run", {}).get("run_seq", 0) + 1,
+            "trigger": ctx.trigger,
+            "started_at": report.timestamp(started),
+            "finished_at": report.timestamp(clock()),
+            "agent_version": ctx.agent_version,
+            "errors": errors,
+        }
+        wants_report = report.should_report(prev_state, posture, coverage, reconciled, actions,
+                                            error_kinds, runtime.get("error_kinds", []))
+        report_doc = report_bytes = None
+        last_report = (prev_state or {}).get("last_report")
+        if wants_report:
+            report_doc = report.build_report(
+                ctx, run=run, identity=_first(l1.state, "identity", "name"),
+                version=_first(l1.state, "system_resource", "version"), collection=collection,
+                reconciled=reconciled, actions=actions, prev_state=prev_state,
+                evaluation_mode="what-if" if publisher is None else "enforce")
+            report_bytes = report.to_bytes(report_doc)
+            last_report = {"run_id": run_id, "report_seq": report_doc["integrity"]["report_seq"],
+                           "sha256": report.sha256_hex(report_bytes)}
+        state_doc = report.build_state_doc(ctx, run=run, posture=posture, coverage=coverage,
+                                           open_findings=reconciled.open_findings, last_report=last_report)
+        problems = validate_state(state_doc)
+        if report_doc is not None:
+            problems += validate_report(report_doc)
         for problem in problems:
             print(f"[KONTRAKT] {problem}", file=sys.stderr)
+        return posture, error_kinds, report_doc, report_bytes, state_doc, problems
+
+    # R10: nic nie zostaje zapisane ani zmienione na routerze, jeśli dokument łamie kontrakt.
+    posture, error_kinds, report_doc, report_bytes, state_doc, problems = assemble()
+    if problems:
         return EXIT_FAILED
+
+    attempted = set(runtime.get("remediation_attempted", []))
+    repaired = 0
+    if mode == mitigate.FULL and actions:
+        outcome = mitigate.execute_actions(
+            mitigate.ActionEnv(ctx=ctx, run_id=run_id, clock=clock, state=l1.state,
+                               rules={r["id"]: r for r in universal}, ignored=ignored_attrs(local_doc),
+                               publisher=publisher, sync_error=sync_error, monitor_connector=connector,
+                               remediate_connector=remediate_connector, evidence_dir=out_dir / "evidence"),
+            actions, reconciled.findings)
+        for code, message in outcome.errors:
+            add_error("act", code, message)
+        # Stan po akcjach: naprawiony finding zostaje w raporcie, ale nie jest już otwarty.
+        reconciled.open_findings = [f for f in reconciled.open_findings if f["fingerprint"] not in outcome.repaired]
+        attempted |= outcome.attempted
+        repaired = len(outcome.repaired)
+        posture, error_kinds, report_doc, report_bytes, state_doc, problems = assemble()
+        if problems:
+            return EXIT_FAILED
+    attempted &= {f["fingerprint"] for f in reconciled.open_findings}
 
     if report_doc is not None:
         data = l1.raw and evidence.without_secrets(l1.raw)
@@ -206,7 +232,7 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         report.write_atomic(reports_dir / moment / name, report_bytes)
     report.write_atomic(state_path, report.to_bytes(state_doc))
     runtime_doc = {"local_digest": ctx.local_digest, "error_kinds": error_kinds,
-                   "published": runtime.get("published"),
+                   "published": runtime.get("published"), "remediation_attempted": sorted(attempted),
                    "publish_error": None if sync_error else runtime.get("publish_error")}
     report.write_atomic(runtime_path, report.to_bytes(runtime_doc))
 
@@ -220,7 +246,7 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
 
     print(f"{ctx.router_id}: posture={posture} coverage={coverage} otwarte={len(reconciled.open_findings)} "
           f"nowe={report_doc['verdict']['findings_new'] if report_doc else 0} "
-          f"rozwiązane={len(reconciled.resolved)} raport={'tak' if report_doc else 'nie'} "
+          f"naprawione={repaired} rozwiązane={len(reconciled.resolved)} raport={'tak' if report_doc else 'nie'} "
           f"publikacja={published} błędy={','.join(error_kinds) or '-'}")
     return EXIT_FAILED if published == "błąd" else EXIT_OK
 
@@ -231,22 +257,20 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true", help="wykonaj jeden cykl (jedyny tryb, ADR-001)")
     parser.add_argument("--dry-run", action="store_true",
                         help="raport i stan lokalnie, bez publikacji i bez zmian na routerze")
-    parser.add_argument("--no-remediate", action="store_true", help="publikacja bez remediacji, akcje tylko opisane")
-    parser.add_argument("--publish-branch", metavar="test/NAZWA", help="publikacja na gałąź testową zamiast main (z --no-remediate)")
+    parser.add_argument("--no-remediate", action="store_true", help="publikacja, akcje tylko opisane; router bez zmian")
+    parser.add_argument("--publish-branch", metavar="test/NAZWA", help="publikacja na gałąź testową zamiast main")
     parser.add_argument("--trigger", choices=["timer", "manual"], default="manual",
                         help="źródło uruchomienia zapisywane w raporcie")
     return parser
 
 
-def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None) -> int:
+def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None, remediate_connector=None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if not args.once:
         parser.error("wymagane --once")
     if args.dry_run and (args.no_remediate or args.publish_branch):
         parser.error("--dry-run nie publikuje: nie łączy się z --no-remediate ani --publish-branch")
-    if not args.dry_run and not args.no_remediate:
-        parser.error("remediacja powstaje w iteracji 3: wymagane --dry-run albo --no-remediate")
     if args.publish_branch and not TEST_BRANCH.match(args.publish_branch):
         parser.error("--publish-branch: wymagana nazwa test/<nazwa> (małe litery, cyfry, myślnik)")
 
@@ -280,7 +304,9 @@ def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None) 
             except PublishError as exc:
                 print(f"[PUBLIKACJA] {exc}", file=sys.stderr)
                 sync_error = str(exc)
-            return run_cycle(ctx, out_dir, clock, connect, Publisher(ctx, branch, out_dir), sync_error)
+            return run_cycle(ctx, out_dir, clock, connect, Publisher(ctx, branch, out_dir), sync_error,
+                             mitigate.NO_REMEDIATE if args.no_remediate else mitigate.FULL,
+                             remediate_connector or l1_router.connect_remediate)
     except (ConfigError, PublishError) as exc:
         print(f"[KONFIGURACJA] {exc}", file=sys.stderr)
         return EXIT_FAILED

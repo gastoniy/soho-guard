@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -26,6 +27,7 @@ GIT_TIMEOUT = 30
 MAX_ATTEMPTS = 2
 MAX_MESSAGE = 200
 VOLATILE_STATE = ("last_run", "heartbeat")
+GITHUB_REMOTE = re.compile(r"^(?:git@|ssh://git@)github\.com[:/](.+?)(?:\.git)?$")
 
 
 class PublishError(Exception):
@@ -150,33 +152,55 @@ class Publisher:
     def publish(self, state_file: Path, message: str) -> None:
         """Publikuje outbox i stan. Po błędzie outbox zostaje bez zmian."""
         files = self.pending()
+        copies = [(path, path.relative_to(self.outbox)) for path in files]
+        copies.append((state_file, Path("state") / f"{self.router_id}.json"))
+        self._push(copies, self.branch, message)
+        for path in files:
+            path.unlink()
+
+    def read_site_file(self, relative: str) -> str:
+        with self._lock():
+            return (self.paths.site_dir / relative).read_text(encoding="utf-8")
+
+    def push_proposal(self, relative: str, source: Path, run_id: str, message: str) -> str:
+        """Gałąź z propozycją zmiany. PR otwiera workflow repo instalacji, wskazaną gałąź
+        bazową czyta ze stopki commita. Zwraca odnośnik do porównania."""
+        with self._lock():
+            repo = GITHUB_REMOTE.match(self._git("config", "--get", "remote.origin.url").strip())
+        if repo is None:
+            raise PublishError("adres origin nie wskazuje repozytorium GitHub")
+        target = f"agent/{self.router_id}/{run_id}"
+        if not self._push([(source, Path(relative))], target, f"{message}\n\nBase: {self.branch}"):
+            raise PublishError("propozycja nie zmienia pliku")
+        return f"https://github.com/{repo.group(1)}/compare/{self.branch}...{target}?expand=1"
+
+    def _push(self, copies: list[tuple[Path, Path]], target: str, message: str) -> bool:
         with self._lock():
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 self._git("fetch", "--prune", "origin")
                 try:
-                    self._commit_and_push(files, state_file, message)
-                    break
+                    return self._commit_and_push(copies, target, message)
                 except (PublishError, OSError) as exc:
                     if attempt == MAX_ATTEMPTS:
                         raise PublishError(str(exc)[:MAX_MESSAGE]) from exc
-        for path in files:
-            path.unlink()
+        return False
 
-    def _commit_and_push(self, files: list[Path], state_file: Path, message: str) -> None:
+    def _commit_and_push(self, copies: list[tuple[Path, Path]], target: str, message: str) -> bool:
+        """Zwraca, czy powstał commit. Przerwanie po pushu, a przed czyszczeniem outboxu,
+        daje przy ponowieniu te same pliki i brak commita."""
         self._discard_worktree()
         self._git("worktree", "add", "--quiet", "--detach", str(self.worktree), self._base_ref())
         try:
-            copies = [(path, path.relative_to(self.outbox)) for path in files]
-            copies.append((state_file, Path("state") / f"{self.router_id}.json"))
             for source, relative in copies:
-                target = self.worktree / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
+                destination = self.worktree / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
             self._git("add", "--", *(str(relative) for _, relative in copies), cwd=self.worktree)
-            # Przerwanie po pushu, a przed czyszczeniem outboxu, daje przy ponowieniu te same pliki.
-            if self._git("status", "--porcelain", cwd=self.worktree).strip():
-                self._git("commit", "--quiet", "-m", message, cwd=self.worktree)
-                self._git("push", "--quiet", "origin", f"HEAD:refs/heads/{self.branch}", cwd=self.worktree)
+            if not self._git("status", "--porcelain", cwd=self.worktree).strip():
+                return False
+            self._git("commit", "--quiet", "-m", message, cwd=self.worktree)
+            self._git("push", "--quiet", "origin", f"HEAD:refs/heads/{target}", cwd=self.worktree)
+            return True
         finally:
             self._discard_worktree()
 

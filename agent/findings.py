@@ -71,7 +71,8 @@ def _open_entry(finding: Finding) -> dict:
 
 def reconcile(violations: list[Violation], prev_open: list[dict], *, now: str,
               evaluated_rules: set[str], known_rules: set[str], absorbed: set[str],
-              universal_changed: bool, local_changed: bool) -> Reconciled:
+              universal_changed: bool, local_changed: bool,
+              remediation_attempted: set[str] = frozenset()) -> Reconciled:
     """Finding znika z otwartych tylko po potwierdzeniu: reguła oceniona i nie wykryła
     naruszenia. Brak danych niczego nie rozwiązuje."""
     prev = {p["fingerprint"]: p for p in prev_open}
@@ -98,6 +99,8 @@ def reconcile(violations: list[Violation], prev_open: list[dict], *, now: str,
         elif (item["rule_source"] == "local" and local_changed) or \
                 (item["rule_source"] == "universal" and universal_changed):
             resolved_by = "policy-change"
+        elif fp in remediation_attempted:
+            resolved_by = "remediation"
         else:
             resolved_by = "external-change"
         out.resolved.append({"fingerprint": fp, "rule": rule, "first_seen_at": item["first_seen_at"],

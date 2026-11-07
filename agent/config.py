@@ -69,6 +69,7 @@ class Context:
     local_digest: str
     local_policy_path: Path
     baseline: dict
+    baseline_rel: str
     paths: Paths
     config_errors: list[tuple[str, str]] = field(default_factory=list)
     trigger: str = "manual"
@@ -196,6 +197,7 @@ def load_context(router_id: str, paths: Paths) -> Context:
         local_digest=digest,
         local_policy_path=local_path,
         baseline=baseline,
+        baseline_rel=baseline_path.relative_to(paths.site_dir).as_posix(),
         paths=paths,
         config_errors=config_errors,
     )

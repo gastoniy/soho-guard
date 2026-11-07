@@ -95,4 +95,4 @@ rules:
     # v7.17+: wartości yes|auto ("auto" = wyłączone bez Back To Home); v6: yes|no.
     # Ograniczenie: "auto" przy włączonym Back To Home oznacza DDNS aktywne.
     check: { path: /ip/cloud, assert: { ddns-enabled: { one_of: ["no", "auto"] } } }
-    remediate: { set: { ddns-enabled: "no" } }
+    # Bez remediate: "no" jest niepoprawne na v7, a wartość zależna od wersji wymagałaby zmiany schematu.

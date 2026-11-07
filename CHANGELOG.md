@@ -3,6 +3,16 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+### Dodane
+- Agent, iteracja 3: tryb pełny (bez `--dry-run` i `--no-remediate`), z `--publish-branch test/<nazwa>` lub na `main`. Reguły uniwersalne bez IOC z `remediate` są naprawiane kontem `remediate` i weryfikowane odczytem kontem `monitor`. Jedna próba, bez ponawiania.
+- Drift: agent wypycha gałąź `agent/<router>/<run_id>` z propozycją `baseline-state.yml`, a PR otwiera workflow repo instalacji. Jeden PR na cykl. `external_ref` to odnośnik `compare`.
+- Alert: raport z akcją `alert` dostaje status `succeeded` po zapisie do publikacji (nie oznacza to doręczenia), a workflow repo instalacji tworzy z niego issue.
+- Kody błędów `act.remediate-failed` i `act.pr-failed`.
+- Na `main` naprawa jest wstrzymana (`skipped`), gdy `site.yml` wskazuje inną wersję polityki niż wdrożona.
+### Zmienione
+- `policy.services.cloud-ddns.disabled` bez `remediate`: wartość `no` jest niepoprawna na v7. Akcja to teraz `none/skipped`.
+- Reguły `rules` polityki lokalnej dostają `alert`, drift pozostaje `open-pr`.
+- Raport jest walidowany (R10) także przed akcjami, żeby router nie zmienił się w przebiegu z niepoprawnym dokumentem.
 
 ## [v0.3.0-lab] — 2026-11-07
 ### Dodane

@@ -33,6 +33,8 @@ class Violation:
     observed: dict | None
     remediate: dict | None = None
     also_matched: list[str] = field(default_factory=list)
+    where: dict | None = None
+    drift: bool = False
 
 
 @dataclass
@@ -50,6 +52,14 @@ class EvalResult:
     unevaluated: list[dict]
     # Naruszenia pochłonięte przez regułę o pierwszeństwie: (reguła, ścieżka, obiekt)
     absorbed: list[tuple[str, str, str]]
+
+
+def ignored_attrs(local_doc: dict) -> dict[str, set[str]]:
+    """Atrybuty wyłączone z driftu wpisami drift.ignore polityki lokalnej."""
+    ignored: dict[str, set[str]] = {}
+    for entry in (local_doc.get("drift") or {}).get("ignore", []):
+        ignored.setdefault(entry["resource"], set()).update(entry["attrs"])
+    return ignored
 
 
 def _path_of(resource: str) -> str:
@@ -120,7 +130,7 @@ def check_rule(rule: dict, state: dict, rule_source: str = "universal",
     def violation(key: str, expected: dict | None, observed: dict) -> Violation:
         return Violation(rule=rule["id"], rule_source=rule_source, severity=rule["severity"],
                          ioc=bool(rule.get("ioc", False)), path=path, object_key=key,
-                         expected=expected, observed=observed, remediate=rule.get("remediate"))
+                         expected=expected, observed=observed, remediate=rule.get("remediate"), where=where)
 
     found: list[Violation] = []
     if check.get("scope") == "none-match":
@@ -153,7 +163,7 @@ def _diff_resource(resource: str, base_rows: list[dict], cur_rows: list[dict], r
 
     def violation(key: str, expected: dict | None, observed: dict | None) -> Violation:
         return Violation(rule=rule_id, rule_source="local", severity=severity, ioc=False,
-                         path=path, object_key=key, expected=expected, observed=observed)
+                         path=path, object_key=key, expected=expected, observed=observed, drift=True)
 
     found: list[Violation] = []
     for key in sorted(set(base) | set(current)):
@@ -175,9 +185,7 @@ def evaluate(state: dict, universal_rules: list[dict], local_doc: dict, baseline
     niższego poziomu na tym samym obiekcie nie tworzy osobnego naruszenia."""
     drift_cfg = local_doc.get("drift") or {}
     overrides = {o["resource"]: o for o in drift_cfg.get("overrides", [])}
-    ignored: dict[str, set[str]] = {}
-    for entry in drift_cfg.get("ignore", []):
-        ignored.setdefault(entry["resource"], set()).update(entry["attrs"])
+    ignored = ignored_attrs(local_doc)
 
     result = EvalResult([], set(), set(), [], [])
     universal_by_object: dict[tuple[str, str], list[Violation]] = {}

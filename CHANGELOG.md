@@ -3,6 +3,8 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+
+## [v0.4.0-lab] — 2026-11-07
 ### Dodane
 - Agent, iteracja 3: tryb pełny (bez `--dry-run` i `--no-remediate`), z `--publish-branch test/<nazwa>` lub na `main`. Reguły uniwersalne bez IOC z `remediate` są naprawiane kontem `remediate` i weryfikowane odczytem kontem `monitor`. Jedna próba, bez ponawiania.
 - Drift: agent wypycha gałąź `agent/<router>/<run_id>` z propozycją `baseline-state.yml`, a PR otwiera workflow repo instalacji. Jeden PR na cykl. `external_ref` to odnośnik `compare`.

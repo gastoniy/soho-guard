@@ -145,24 +145,27 @@ def strip_volatile(entry: dict) -> dict:
             if k not in VOLATILE_KEYS and not _is_sensitive(k, v)}
 
 
-def _is_internal_log_listener(entry: dict) -> bool:
-    """v7: /ip/service pokazuje wewnętrzne gniazdo logowania z portem efemerycznym.
-    Wiersz zostaje w migawce, ulotny jest tylko jego port."""
-    return entry.get("name") == "log" and "proto" in entry and "address" not in entry
+def _is_service_listener(entry: dict) -> bool:
+    """v7: /ip/service pokazuje też bieżące gniazda (dhcp, ntp, resolver, włączony socks):
+    mają proto, ale nie mają address. Odzwierciedlają stan działania, a nie konfigurację,
+    więc nie wchodzą do migawki. Skutek: tak jak na v6 nowe gniazdo nie jest driftem."""
+    return "proto" in entry and "address" not in entry
+
+
+def is_service_config(entry: dict) -> bool:
+    return not _is_runtime_entry(entry) and not _is_service_listener(entry)
 
 
 def normalize(resource):
     if isinstance(resource, dict):
         return dict(sorted(strip_volatile(resource).items()))
     cleaned = [strip_volatile(e) for e in resource if not _is_runtime_entry(e)]
-    for e in cleaned:
-        if _is_internal_log_listener(e):
-            e.pop("port", None)
     return sorted(cleaned, key=lambda e: e.get("name") or json.dumps(e, sort_keys=True))
 
 
 def build_state(raw: dict) -> dict:
-    return {k: normalize(v) for k, v in raw.items()}
+    return {k: normalize([e for e in v if is_service_config(e)] if k == "services" else v)
+            for k, v in raw.items()}
 
 
 # --- predykaty polityki -----------------------------------------------------

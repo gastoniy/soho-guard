@@ -158,6 +158,52 @@ def test_several_repairs_share_one_session(full):
     assert {a["status"] for a in full.reports()[-1]["actions"]} == {"succeeded"}
 
 
+def test_v7_socks_listener_is_not_drift(full, capsys):
+    """RC na r1: włączony SOCKS dodaje gniazdo w /ip/service. Jedna zmiana, jeden finding."""
+    sim = Sim(router())
+    assert full.full(sim) == 0
+    sim.data[("ip", "socks")][0]["enabled"] = True
+    listener = {".id": "*A", "name": "socks", "port": 1080, "proto": "tcp", "disabled": False}
+    sim.data[("ip", "service")].append(listener)
+    capsys.readouterr()
+    full.later()
+    assert full.full(sim) == 0
+    rep = full.reports()[-1]
+    assert [f["rule"] for f in rep["findings"]] == [SOCKS_RULE]
+    assert [a["type"] for a in rep["actions"]] == ["auto-remediate"]
+    assert "otwarte=0 nowe=1 naprawione=1 rozwiązane=0" in capsys.readouterr().out
+    sim.data[("ip", "service")].remove(listener)
+    full.later()
+    assert full.full(sim) == 0
+    full.assert_chain(2)
+
+
+def test_stale_listener_rows_in_baseline_are_not_drift(full):
+    """Baseline r1 ma jeszcze wiersze gniazd: wypadają przy wczytaniu, bez PR."""
+    path = full.lab.site / "routers" / "r2" / "baseline-state.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["services"].append({"name": "dhcp", "port": 67, "proto": "udp", "disabled": False})
+    full.operator_commit("routers/r2/baseline-state.yml", yaml.safe_dump(doc))
+    sim = Sim(router())
+    assert full.full(sim) == 0
+    assert full.reports()[-1]["findings"] == []
+
+
+def test_listener_row_with_rule_name_is_not_selected(full):
+    services = copy.deepcopy(base.CLEAN[("ip", "service")])
+    next(s for s in services if s["name"] == "telnet")["disabled"] = False
+    services.append({".id": "*B", "name": "telnet", "port": 23, "proto": "tcp"})
+    sim = Sim(router(ip__service=services))
+    assert full.full(sim) == 0
+    assert sim.writes == [(("ip", "service"), {"disabled": "yes", ".id": "*3"})]
+
+
+def test_counter_is_zero_outside_full_mode(full, capsys):
+    sim = Sim(router(**SOCKS_ON))
+    assert full.full(sim, "--no-remediate") == 0
+    assert "naprawione=0" in capsys.readouterr().out
+
+
 # --- niepowodzenia i brak ponawiania ---
 def test_rejected_write_fails_once_without_retry(full):
     sim = Sim(router(**SOCKS_ON))

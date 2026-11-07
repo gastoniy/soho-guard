@@ -13,6 +13,8 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 - `policy.services.cloud-ddns.disabled` bez `remediate`: wartość `no` jest niepoprawna na v7. Akcja to teraz `none/skipped`.
 - Reguły `rules` polityki lokalnej dostają `alert`, drift pozostaje `open-pr`.
 - Raport jest walidowany (R10) także przed akcjami, żeby router nie zmienił się w przebiegu z niepoprawnym dokumentem.
+- Migawka v7 bez wierszy-gniazd z `/ip/service` (`proto` bez `address`, np. `dhcp`, `ntp`, włączony `socks`): to stan działania, a nie konfiguracja. Włączony SOCKS dawał dodatkowy, fałszywy drift i błędny PR. Wiersze w istniejącym `baseline-state.yml` są pomijane przy wczytaniu. Nowe gniazdo nie jest driftem, tak jak dotąd na v6.
+- Podsumowanie cyklu: licznik `naprawione=`.
 
 ## [v0.3.0-lab] — 2026-11-07
 ### Dodane

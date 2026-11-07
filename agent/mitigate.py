@@ -14,6 +14,7 @@ from agent.normalize import (
     SINGLETONS,
     _is_runtime_entry,
     _match_predicate,
+    is_service_config,
     build_state,
     coerce,
     fetch_resources,
@@ -112,6 +113,7 @@ def _apply(api, finding: Finding) -> None:
     if resource not in SINGLETONS:
         rows = [dict(r) for r in menu]
         selected = [r for r in rows if not _is_runtime_entry(r)
+                    and (resource != "services" or is_service_config(r))
                     and all(_match_predicate(coerce(r.get(a)), c) for a, c in (v.where or {}).items())]
         if len(selected) != 1:
             raise ValueError(f"selektor reguły wskazał {len(selected)} wierszy zamiast jednego")

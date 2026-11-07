@@ -203,6 +203,7 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         return EXIT_FAILED
 
     attempted = set(runtime.get("remediation_attempted", []))
+    repaired = 0
     if mode == mitigate.FULL and actions:
         outcome = mitigate.execute_actions(
             mitigate.ActionEnv(ctx=ctx, run_id=run_id, clock=clock, state=l1.state,
@@ -215,6 +216,7 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         # Stan po akcjach: naprawiony finding zostaje w raporcie, ale nie jest już otwarty.
         reconciled.open_findings = [f for f in reconciled.open_findings if f["fingerprint"] not in outcome.repaired]
         attempted |= outcome.attempted
+        repaired = len(outcome.repaired)
         posture, error_kinds, report_doc, report_bytes, state_doc, problems = assemble()
         if problems:
             return EXIT_FAILED
@@ -244,7 +246,7 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
 
     print(f"{ctx.router_id}: posture={posture} coverage={coverage} otwarte={len(reconciled.open_findings)} "
           f"nowe={report_doc['verdict']['findings_new'] if report_doc else 0} "
-          f"rozwiązane={len(reconciled.resolved)} raport={'tak' if report_doc else 'nie'} "
+          f"naprawione={repaired} rozwiązane={len(reconciled.resolved)} raport={'tak' if report_doc else 'nie'} "
           f"publikacja={published} błędy={','.join(error_kinds) or '-'}")
     return EXIT_FAILED if published == "błąd" else EXIT_OK
 

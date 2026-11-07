@@ -531,10 +531,13 @@ def test_public_key_is_redacted_in_report_values():
 
 # --- CLI i konfiguracja ---
 @pytest.mark.parametrize("argv,fragment", [
-    (["--router", "r2", "--once"], "wymagane --dry-run"),
+    (["--router", "r2", "--once"], "iteracji 3"),
+    (["--router", "r2", "--once", "--publish-branch", "test/x"], "iteracji 3"),
     (["--router", "r2", "--dry-run"], "wymagane --once"),
-    (["--router", "r2", "--once", "--dry-run", "--no-remediate"], "iteracji 3"),
-    (["--router", "r2", "--once", "--dry-run", "--publish-branch", "test/x"], "iteracji 2"),
+    (["--router", "r2", "--once", "--dry-run", "--no-remediate"], "nie publikuje"),
+    (["--router", "r2", "--once", "--dry-run", "--publish-branch", "test/x"], "nie publikuje"),
+    (["--router", "r2", "--once", "--no-remediate", "--publish-branch", "main"], "test/<nazwa>"),
+    (["--router", "r2", "--once", "--no-remediate", "--publish-branch", "test/../x"], "test/<nazwa>"),
 ])
 def test_cli_rejects_unavailable_modes(lab, capsys, argv, fragment):
     with pytest.raises(SystemExit) as info:

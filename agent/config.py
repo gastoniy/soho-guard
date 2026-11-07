@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import re
 import subprocess
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,10 +18,15 @@ from agent.normalize import build_state
 ROUTER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 RELEASE_TAG = re.compile(r"^v([0-9]+\.[0-9]+\.[0-9]+)(-lab(\.rc[0-9]+)?)?$")
 PROFILES = ("ros6", "ros7")
+LOCK_WAIT_S = 45
 
 
 class ConfigError(Exception):
     """Konfiguracja nie pozwala rozpocząć przebiegu."""
+
+
+class LockTimeout(ConfigError):
+    """Drugi przebieg zbyt długo trzyma blokadę klonu."""
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,14 @@ class Paths:
     @property
     def site_lock(self) -> Path:
         return self.data_dir / "site-lab.lock"
+
+    @property
+    def deploy_key(self) -> Path:
+        return self.etc_dir / "deploy_key"
+
+    @property
+    def known_hosts(self) -> Path:
+        return self.data_dir / ".ssh" / "known_hosts"
 
 
 @dataclass
@@ -65,7 +79,15 @@ def site_lock(paths: Paths):
     """Wspólny klon repo instalacji: odczyt i git pod jedną blokadą (r1 i r2)."""
     paths.site_lock.parent.mkdir(parents=True, exist_ok=True)
     with open(paths.site_lock, "a", encoding="utf-8") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise LockTimeout(f"blokada {paths.site_lock} zajęta dłużej niż {LOCK_WAIT_S} s") from exc
+                time.sleep(0.2)
         try:
             yield
         finally:

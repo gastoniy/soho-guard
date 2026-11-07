@@ -1,10 +1,11 @@
-"""CLI i cykl agenta: python -m agent --router r1 --once --dry-run."""
+"""CLI i cykl agenta: python -m agent --router r1 --once (--dry-run | --no-remediate)."""
 from __future__ import annotations
 
 import argparse
 import fcntl
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 from agent import evidence, l1_router, mitigate, policy, report
 from agent.config import ConfigError, Context, Paths, load_context
 from agent.findings import ACCESS_LOST_RULE, access_lost_violation, fingerprint, reconcile
+from agent.publish import MAIN, Publisher, PublishError, should_publish, state_digest
 from agent.static_eval import EvalResult, evaluate
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -22,6 +24,7 @@ EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_BUSY = 3
 MAX_NOTE = 500
+TEST_BRANCH = re.compile(r"^test/[a-z0-9][a-z0-9-]*$")
 LAYER_PENDING = {"l2": "warstwa L2 dochodzi w iteracji 4", "l3": "warstwa L3 dochodzi w iteracji 5"}
 
 
@@ -64,12 +67,33 @@ def _collection(l1: l1_router.L1Result, notes: list[str]) -> dict:
     }
 
 
-def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.connect_monitor) -> int:
+def _publish(publisher: Publisher, state_path: Path, state_doc: dict, runtime_doc: dict, message: str) -> str:
+    """Wynik zapisuje się dopiero po próbie: błąd pusha trafi do raportu następnego cyklu (R3)."""
+    if not should_publish(state_doc, bool(publisher.pending()), runtime_doc["published"]):
+        return "nie"
+    try:
+        publisher.publish(state_path, message)
+    except PublishError as exc:
+        print(f"[PUBLIKACJA] {exc}", file=sys.stderr)
+        runtime_doc["publish_error"] = str(exc)
+        return "błąd"
+    runtime_doc["publish_error"] = None
+    runtime_doc["published"] = {"digest": state_digest(state_doc), "at": state_doc["heartbeat"]["at"]}
+    return "tak"
+
+
+def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.connect_monitor,
+              publisher: Publisher | None = None, sync_error: str | None = None) -> int:
+    """Bez publishera to --dry-run: tylko zapis lokalny, własny łańcuch what-if."""
     started = clock()
     run_id = report.new_ulid(started)
     state_path = out_dir / "state.json"
     runtime_path = out_dir / "runtime.json"
     prev_state = _read_json(state_path, None)
+    if prev_state is None and publisher:
+        prev_state = publisher.published_state()
+    if publisher:
+        publisher.quarantine_orphans(((prev_state or {}).get("last_report") or {}).get("report_seq", 0))
     runtime = _read_json(runtime_path, {})
 
     errors: list[dict] = []
@@ -77,6 +101,11 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
     def add_error(stage: str, code: str, message: str):
         errors.append({"stage": stage, "code": code, "message": message[:MAX_NOTE]})
 
+    # Awaria łącza zgłaszana jest raz: przy braku synchronizacji cykl nie próbuje pusha.
+    if sync_error:
+        add_error("publish", "publish.sync-failed", sync_error)
+    elif runtime.get("publish_error"):
+        add_error("publish", "publish.push-failed", runtime["publish_error"])
     for code, message in ctx.config_errors:
         add_error("evaluate", code, message)
     if ctx.universal_pin != ctx.release_tag:
@@ -125,7 +154,7 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         universal_changed=prev_version != ctx.release_tag,
         local_changed=prev_digest != ctx.local_digest,
     )
-    actions = mitigate.plan_actions(reconciled.findings)
+    actions = mitigate.plan_actions(reconciled.findings, dry_run=publisher is None)
     collection = _collection(l1, notes)
     coverage = report.derive_coverage(collection)
     posture = report.state_posture(reconciled.open_findings, coverage)
@@ -150,7 +179,8 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         report_doc = report.build_report(
             ctx, run=run, identity=_first(l1.state, "identity", "name"),
             version=_first(l1.state, "system_resource", "version"), collection=collection,
-            reconciled=reconciled, actions=actions, prev_state=prev_state)
+            reconciled=reconciled, actions=actions, prev_state=prev_state,
+            evaluation_mode="what-if" if publisher is None else "enforce")
         report_bytes = report.to_bytes(report_doc)
         last_report = {"run_id": run_id, "report_seq": report_doc["integrity"]["report_seq"],
                        "sha256": report.sha256_hex(report_bytes)}
@@ -172,15 +202,27 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
                        data or {"result": "rejected" if l1.auth_rejected else "unavailable"})
         moment = started.strftime("%Y/%m")
         name = f"{report_doc['integrity']['report_seq']:06d}-{run_id}.json"
-        report.write_atomic(out_dir / "reports" / "what-if" / moment / name, report_bytes)
+        reports_dir = publisher.reports_dir if publisher else out_dir / "reports" / "what-if"
+        report.write_atomic(reports_dir / moment / name, report_bytes)
     report.write_atomic(state_path, report.to_bytes(state_doc))
-    report.write_atomic(runtime_path, report.to_bytes({"local_digest": ctx.local_digest, "error_kinds": error_kinds}))
+    runtime_doc = {"local_digest": ctx.local_digest, "error_kinds": error_kinds,
+                   "published": runtime.get("published"),
+                   "publish_error": None if sync_error else runtime.get("publish_error")}
+    report.write_atomic(runtime_path, report.to_bytes(runtime_doc))
+
+    published = "-"
+    if publisher and sync_error:
+        published = "błąd"
+    elif publisher:
+        message = f"agent({ctx.router_id}): {posture}, {coverage}, przebieg {run_id}"
+        published = _publish(publisher, state_path, state_doc, runtime_doc, message)
+        report.write_atomic(runtime_path, report.to_bytes(runtime_doc))
 
     print(f"{ctx.router_id}: posture={posture} coverage={coverage} otwarte={len(reconciled.open_findings)} "
           f"nowe={report_doc['verdict']['findings_new'] if report_doc else 0} "
           f"rozwiązane={len(reconciled.resolved)} raport={'tak' if report_doc else 'nie'} "
-          f"błędy={','.join(error_kinds) or '-'}")
-    return EXIT_OK
+          f"publikacja={published} błędy={','.join(error_kinds) or '-'}")
+    return EXIT_FAILED if published == "błąd" else EXIT_OK
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -189,8 +231,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true", help="wykonaj jeden cykl (jedyny tryb, ADR-001)")
     parser.add_argument("--dry-run", action="store_true",
                         help="raport i stan lokalnie, bez publikacji i bez zmian na routerze")
-    parser.add_argument("--no-remediate", action="store_true", help="publikacja bez remediacji (od iteracji 3)")
-    parser.add_argument("--publish-branch", metavar="test/NAZWA", help="publikacja na gałąź testową (od iteracji 2)")
+    parser.add_argument("--no-remediate", action="store_true", help="publikacja bez remediacji, akcje tylko opisane")
+    parser.add_argument("--publish-branch", metavar="test/NAZWA", help="publikacja na gałąź testową zamiast main (z --no-remediate)")
     parser.add_argument("--trigger", choices=["timer", "manual"], default="manual",
                         help="źródło uruchomienia zapisywane w raporcie")
     return parser
@@ -201,12 +243,12 @@ def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None) 
     args = parser.parse_args(argv)
     if not args.once:
         parser.error("wymagane --once")
-    if args.publish_branch:
-        parser.error("--publish-branch będzie dostępne od iteracji 2")
-    if args.no_remediate:
-        parser.error("--no-remediate będzie dostępne od iteracji 3")
-    if not args.dry_run:
-        parser.error("publikacja powstaje w iteracji 2: na razie wymagane --dry-run")
+    if args.dry_run and (args.no_remediate or args.publish_branch):
+        parser.error("--dry-run nie publikuje: nie łączy się z --no-remediate ani --publish-branch")
+    if not args.dry_run and not args.no_remediate:
+        parser.error("remediacja powstaje w iteracji 3: wymagane --dry-run albo --no-remediate")
+    if args.publish_branch and not TEST_BRANCH.match(args.publish_branch):
+        parser.error("--publish-branch: wymagana nazwa test/<nazwa> (małe litery, cyfry, myślnik)")
 
     os.umask(0o027)
     paths = paths or Paths()
@@ -221,10 +263,25 @@ def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None) 
             except BlockingIOError:
                 print(f"{args.router}: poprzedni cykl jeszcze trwa", file=sys.stderr)
                 return EXIT_BUSY
-            out_dir = paths.data_dir / "dry-run" / args.router
+            connect = connector or l1_router.connect_monitor
+            if args.dry_run:
+                out_dir = paths.data_dir / "dry-run" / args.router
+                out_dir.mkdir(parents=True, exist_ok=True)
+                return run_cycle(ctx, out_dir, clock, connect)
+
+            branch = args.publish_branch or MAIN
+            out_dir = paths.data_dir / "publish" / branch / args.router
             out_dir.mkdir(parents=True, exist_ok=True)
-            return run_cycle(ctx, out_dir, clock, connector or l1_router.connect_monitor)
-    except ConfigError as exc:
+            sync_error = None
+            try:
+                if Publisher(ctx, branch, out_dir).sync():
+                    ctx = load_context(args.router, paths)
+                    ctx.trigger = args.trigger
+            except PublishError as exc:
+                print(f"[PUBLIKACJA] {exc}", file=sys.stderr)
+                sync_error = str(exc)
+            return run_cycle(ctx, out_dir, clock, connect, Publisher(ctx, branch, out_dir), sync_error)
+    except (ConfigError, PublishError) as exc:
         print(f"[KONFIGURACJA] {exc}", file=sys.stderr)
         return EXIT_FAILED
 

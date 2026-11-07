@@ -89,7 +89,8 @@ def _finding_doc(finding: Finding, run_id: str) -> dict:
 
 
 def build_report(ctx: Context, *, run: dict, identity: str | None, version: str | None, collection: dict,
-                 reconciled: Reconciled, actions: list[dict], prev_state: dict | None) -> dict:
+                 reconciled: Reconciled, actions: list[dict], prev_state: dict | None,
+                 evaluation_mode: str = "what-if") -> dict:
     findings = [_finding_doc(f, run["run_id"]) for f in reconciled.findings]
     coverage = derive_coverage(collection)
     last = (prev_state or {}).get("last_report")
@@ -110,7 +111,7 @@ def build_report(ctx: Context, *, run: dict, identity: str | None, version: str 
             "universal_version": ctx.release_tag,
             "universal_commit": ctx.release_commit,
             "local_commit": ctx.local_commit,
-            "evaluation_mode": "what-if",
+            "evaluation_mode": evaluation_mode,
             "mitigation_mode": "auto",
         },
         "collection": collection,

@@ -11,6 +11,8 @@ rules:
     trace:
       attck: ["T1071"]
       timeline: "C2/proxy do znanych złych IP — TrickBot, Glupteba, FrostArmada"
+    # W MVP TI sprawdza tylko cele findingów dynamicznych i potwierdza je
+    # (evidence.l3_corroboration); osobny finding tej reguły nie powstaje.
     detector: ti
     assert: { verdict_not_in: ["malicious", "suspicious"] }
 

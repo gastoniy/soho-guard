@@ -181,6 +181,7 @@ def test_dynamic_minimal_file_valid(tmp_path):
     lambda d: d["dns"].update(allowed_suffixes=["CDN.Example"]),
     lambda d: d["beaconing"]["allowed_periodic"][0].update(port=70000),
     lambda d: d.pop("router_id"),
+    lambda d: d["beaconing"]["allowed_periodic"][0].update(dst="git hub"),
 ])
 def test_dynamic_errors_rejected(tmp_path, change):
     assert _dynamic(tmp_path, change)
@@ -192,3 +193,8 @@ def test_dynamic_cli_mode(tmp_path, capsys):
     p.write_text('schema_version: "1.0"\nrouter_id: r1\ndns: {allowed_resolver: []}\n', encoding="utf-8")
     assert pl.main(["--dynamic", str(p)]) == 1
     assert "allowed_resolver" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("dst", ["*", "github.com", "140.82.112.0/20", "140.82.121.4"])
+def test_dynamic_periodic_dst_forms(tmp_path, dst):
+    assert _dynamic(tmp_path, lambda d: d["beaconing"]["allowed_periodic"][0].update(dst=dst)) == []

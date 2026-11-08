@@ -17,7 +17,7 @@ WINDOW_S = 3600
 ROTATION_SLACK_S = 300
 CONN_FIELDS = ("ts", "uid", "id.orig_h", "id.orig_p", "id.resp_h", "id.resp_p", "proto",
                "duration", "orig_bytes", "resp_bytes", "conn_state", "resp_pkts")
-DNS_FIELDS = ("ts", "uid", "id.orig_h", "id.resp_h", "id.resp_p", "proto", "query", "qtype_name")
+DNS_FIELDS = ("ts", "uid", "id.orig_h", "id.resp_h", "id.resp_p", "proto", "query", "qtype_name", "answers")
 UNSET = {"-", "(empty)"}
 
 
@@ -32,6 +32,9 @@ class ZeekData:
     conn: list[dict] = field(default_factory=list)
     dns: list[dict] = field(default_factory=list)
     files: int = 0
+    # Adres → nazwy z odpowiedzi DNS w oknie, z ruchu wszystkich routerów: powiązanie
+    # nazwy z adresem nie zależy od tego, kto pytał (allowlista beaconów, D3).
+    names: dict[str, set[str]] = field(default_factory=dict)
 
 
 def wan_ip(value: str | None) -> str | None:
@@ -99,6 +102,18 @@ def _read(path: Path, wanted: tuple[str, ...]) -> list[dict]:
         return parse(handle, wanted)
 
 
+def _remember_names(names: dict[str, set[str]], row: dict) -> None:
+    query = (row.get("query") or "").rstrip(".").lower()
+    if not query:
+        return
+    for answer in (row.get("answers") or "").split(","):
+        try:
+            ip = str(ipaddress.ip_address(answer.strip()))
+        except ValueError:
+            continue                      # CNAME, TXT itp.
+        names.setdefault(ip, set()).add(query)
+
+
 def read(zeek_dir: Path, wan: str, now: float, window_s: int = WINDOW_S) -> ZeekData:
     """Przepływy i zapytania z wan_address, które trwały lub zaczęły się w oknie."""
     data = ZeekData(since=now - window_s, until=now)
@@ -108,6 +123,8 @@ def read(zeek_dir: Path, wan: str, now: float, window_s: int = WINDOW_S) -> Zeek
                 data.files += 1
                 for row in _read(path, wanted):
                     ts = _number(row["ts"])
+                    if kind == "dns" and ts is not None and ts >= data.since:
+                        _remember_names(data.names, row)
                     if ts is None or row["id.orig_h"] != wan:
                         continue
                     row["ts"] = ts

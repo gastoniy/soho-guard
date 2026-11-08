@@ -23,7 +23,7 @@
       "additionalProperties": false,
       "properties": {
         "allowed_periodic": {
-          "description": "Legalne połączenia periodyczne: dopasowanie po nazwie celu i proto/port. dst \"*\" = dowolny cel na tym proto/porcie.",
+          "description": "Legalne połączenia periodyczne (rita.beacon): każda para proto/port beaconu musi mieć wpis z pasującym celem. dst: \"*\" (dowolny cel), adres, CIDR albo nazwa (także poddomeny) z FQDN RITA lub odpowiedzi DNS w dns.log.",
           "type": "array",
           "items": {
             "type": "object",

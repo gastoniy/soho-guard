@@ -3,6 +3,15 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+### Dodane
+- Agent, iteracja 5: `policy.dynamic.beacon` z wyników RITA (ClickHouse `lab.threat_mixtape`, ostatni zakończony import). Co cykl zapytanie o ostatni import, beacony tylko po nowym; wynik lokalnie w `rita.json`, więc finding trwa do kolejnego importu. Wynik `beacon_score` > `score_max` poza `beaconing.allowed_periodic` daje finding (alert).
+- `allowed_periodic`: `dst` jako `*`, adres, CIDR albo nazwa; nazwa z FQDN RITA lub z odpowiedzi DNS w `dns.log` z ostatnich 60 min (także poddomeny). Każda para proto/port beaconu musi mieć wpis.
+- Warstwa L3: OTX dla celów findingów rozbieżności, beaconu i resolvera spoza listy (bez adresów prywatnych). Wynik w `evidence.l3_corroboration`; `malicious`/`suspicious` dopisuje `L3` do `trust.corroborated_by`. Zapytanie z adresu źródłowego routera, timeout 10 s, cache 24 h (`ti-cache.json`); klucz z `/etc/soho-guard/ti.env`.
+- Kody błędów `l2.rita-failed`, `l3.lookup-failed`. Awaria RITA lub TI nie tworzy ani nie rozwiązuje findingów.
+### Zmienione
+- `collection.l2`: `ok` (źródła `zeek`, `rita`), gdy Zeek jest czytelny, a ostatni import RITA ma najwyżej 2 h; inaczej `degraded` z powodem. Czysty router może mieć `no-violations` i pokrycie `full`.
+- `collection.l3`: status OTX zamiast stałego `unavailable`.
+- `policy_lint.py --dynamic` sprawdza postać `allowed_periodic.dst`.
 
 ## [v0.5.0-lab] — 2026-11-08
 ### Dodane

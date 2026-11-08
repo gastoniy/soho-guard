@@ -20,7 +20,7 @@ Użycie: policy_lint.py policy/            (katalog, rekurencyjnie)
 Kod: 0 OK, 1 naruszenie, 2 błąd. Wymaga PyYAML, jsonschema>=4.18.
 """
 from __future__ import annotations
-import ipaddress, json, sys
+import ipaddress, json, re, sys
 from pathlib import Path
 import yaml
 from jsonschema import Draft202012Validator
@@ -144,12 +144,29 @@ def lint_local(paths) -> list[str]:
     return issues
 
 
+HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+
+
+def _periodic_dst_ok(value: str) -> bool:
+    """dst w allowed_periodic: "*", adres, CIDR albo nazwa (dopasowanie także poddomen)."""
+    if value == "*" or HOSTNAME.match(value):
+        return True
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return True
+    except ValueError:
+        return False
+
+
 def lint_dynamic_doc(name: str, doc: object) -> list[str]:
     """Baseline dynamiczny jednego routera: schemat, potem adresy resolverów."""
     errs = sorted(_V_DYNAMIC.iter_errors(doc), key=lambda e: list(e.absolute_path))
     if errs:
         return [f"{name} /" + "/".join(map(str, e.absolute_path)) + ": " + e.message for e in errs]
     issues = []
+    for i, entry in enumerate(((doc.get("beaconing") or {}).get("allowed_periodic")) or []):
+        if not _periodic_dst_ok(entry["dst"]):
+            issues.append(f"{name} /beaconing/allowed_periodic/{i}/dst: {entry['dst']!r} nie jest \"*\", adresem, CIDR ani nazwą")
     for i, value in enumerate(((doc.get("dns") or {}).get("allowed_resolvers")) or []):
         try:
             ipaddress.ip_address(value)

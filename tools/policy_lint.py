@@ -10,13 +10,17 @@ Poziomy:
 Polityka lokalna (--local): struktura wg schemas/local-policy.schema.json oraz
 spójność z zasobami agenta (RESOURCES), unikalność id i rezerwacja local.drift.*.
 
+Baseline dynamiczny (--dynamic): struktura wg schemas/dynamic-baseline.schema.json
+oraz poprawność adresów resolverów.
+
 Użycie: policy_lint.py policy/            (katalog, rekurencyjnie)
         policy_lint.py plik.yml...
         policy_lint.py --local routers/*/local-policy.yml
+        policy_lint.py --dynamic routers/*/dynamic-baseline.yml
 Kod: 0 OK, 1 naruszenie, 2 błąd. Wymaga PyYAML, jsonschema>=4.18.
 """
 from __future__ import annotations
-import json, sys
+import ipaddress, json, sys
 from pathlib import Path
 import yaml
 from jsonschema import Draft202012Validator
@@ -40,6 +44,7 @@ def _validator(schema="policy.schema.json"):
 
 _V = _validator()
 _V_LOCAL = _validator("local-policy.schema.json")
+_V_DYNAMIC = _validator("dynamic-baseline.schema.json")
 
 
 def _files(args):
@@ -139,15 +144,43 @@ def lint_local(paths) -> list[str]:
     return issues
 
 
+def lint_dynamic_doc(name: str, doc: object) -> list[str]:
+    """Baseline dynamiczny jednego routera: schemat, potem adresy resolverów."""
+    errs = sorted(_V_DYNAMIC.iter_errors(doc), key=lambda e: list(e.absolute_path))
+    if errs:
+        return [f"{name} /" + "/".join(map(str, e.absolute_path)) + ": " + e.message for e in errs]
+    issues = []
+    for i, value in enumerate(((doc.get("dns") or {}).get("allowed_resolvers")) or []):
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            issues.append(f"{name} /dns/allowed_resolvers/{i}: {value!r} nie jest adresem IP")
+    return issues
+
+
+def lint_dynamic(paths) -> list[str]:
+    issues = []
+    files = _files(paths)
+    if not files:
+        return ["brak plików baseline dynamicznego"]
+    for path in files:
+        issues += lint_dynamic_doc(str(path), yaml.safe_load(path.read_text(encoding="utf-8")))
+    return issues
+
+
+MODES = {"--local": lint_local, "--dynamic": lint_dynamic}
+
+
 def main(argv):
-    local = argv[:1] == ["--local"]
-    if local:
-        argv = argv[1:]
+    check = lint
+    if argv[:1] and argv[0] in MODES:
+        check, argv = MODES[argv[0]], argv[1:]
     if not argv:
-        print("użycie: policy_lint.py policy/ | plik.yml... | --local plik.yml...", file=sys.stderr)
+        print("użycie: policy_lint.py policy/ | plik.yml... | --local plik.yml... | --dynamic plik.yml...",
+              file=sys.stderr)
         return 2
     try:
-        issues = lint_local(argv) if local else lint(argv)
+        issues = check(argv)
     except (OSError, yaml.YAMLError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 2

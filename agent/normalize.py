@@ -37,6 +37,10 @@ RESOURCES = {
     "firewall_filter":       ("ip", "firewall", "filter"),
     "firewall_nat":          ("ip", "firewall", "nat"),
     "firewall_address_lists":("ip", "firewall", "address-list"),
+    # przed śledzeniem połączeń: notrack ukrywa sesję w tablicy, drop po cichu blokuje
+    "firewall_raw":          ("ip", "firewall", "raw"),
+    # znaczniki routingu mogą skierować ruch inną trasą (np. do tunelu)
+    "firewall_mangle":       ("ip", "firewall", "mangle"),
     "socks":                 ("ip", "socks"),
     # tunelowanie / nieautoryzowany zdalny dostęp (v7: wireguard; brak w v6 — pomijany)
     "wireguard_interfaces":  ("interface", "wireguard"),

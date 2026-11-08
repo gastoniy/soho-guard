@@ -21,10 +21,11 @@ rules:
     phase: dynamic
     trace:
       timeline: "ukryte sesje C2 — rdzeń modelu zagrożeń (ADR-003)"
-    # Ścieżka szybka (DYN-011a): przepływy z bieżących logów Zeeka zestawiane
-    # z L1 w każdym cyklu agenta — bez czekania na import RITA. min_repeats
-    # chroni przed fałszywą rozbieżnością dla połączeń krótszych niż
-    # interwał odpytywania tablicy połączeń routera (L1 to migawka).
+    # Ścieżka szybka (DYN-011a): przepływy Zeeka z ostatnich 60 min zestawiane
+    # z próbkami tablicy połączeń (L1), bez czekania na import RITA. Dowodem jest
+    # tylko przepływ trwający w chwili próbki: L1 to migawka, krótszego połączenia
+    # nie musi pokazywać. min_repeats = liczba różnych cykli z takim brakiem,
+    # przy zerowej liczbie trafień celu w oknie.
     detector: zeek.conn
     assert: { diverges_from_l1: true, min_repeats: 3 }
 
@@ -47,8 +48,11 @@ rules:
     trace:
       attck: ["T1568.002"]
       timeline: "phone-home do domen DGA — ENDLESSDOORS"
+    # Entropia Shannona najdłuższej etykiety bez TLD. Krótkie etykiety mają mało
+    # wiarygodną entropię; jedna podejrzana nazwa to za mało (DGA generuje wiele).
+    # Wyjątki (CDN) lokalnie: dynamic-baseline#dns.allowed_suffixes. Pomijane .arpa.
     detector: dns.dga
-    assert: { entropy_max: 3.5 }
+    assert: { entropy_max: 3.5, min_label_length: 12, min_distinct: 3 }
 
   - id: policy.dynamic.rogue-resolver
     title: "Zapytania DNS do resolvera spoza listy instalacji"

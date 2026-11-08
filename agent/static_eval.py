@@ -35,6 +35,11 @@ class Violation:
     also_matched: list[str] = field(default_factory=list)
     where: dict | None = None
     drift: bool = False
+    # Faza dynamiczna: dowód behawioralny do raportu, zaufanie warstw i szczegóły lokalne.
+    phase: str = "static"
+    evidence: dict | None = None
+    trust: dict | None = None
+    detail: dict | None = None
 
 
 @dataclass

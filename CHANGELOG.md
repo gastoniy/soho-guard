@@ -3,6 +3,18 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+### Dodane
+- Agent, iteracja 4: warstwa L2 z logów Zeeka (`conn.log`, `dns.log`) z mirrora WAN, przypisanie po `addressing.wan_address` bez maski. Każdy cykl ocenia od nowa ostatnie 60 min (bez kursora), więc finding znika po godzinie bez zdarzeń.
+- `integrity.divergence.connections`: 3 próbki `/ip/firewall/connection` co 5 s w cyklu, przechowywane lokalnie przez 60 min bez adresów LAN. Dowodem jest tylko przepływ zestawiony i trwający w chwili próbki; finding po brakach w co najmniej 3 różnych cyklach i bez trafienia celu w oknie. Przy wyłączonym śledzeniu połączeń reguła nie jest oceniana.
+- `policy.dynamic.rogue-resolver` (resolver spoza `dns.allowed_resolvers`) i `policy.dynamic.dga` (finding na resolver; nazwy domen tylko w dowodzie lokalnym `ev:<run_id>/zeek`). Wyjątki DGA: opcjonalne `dns.allowed_suffixes` w `dynamic-baseline.yml`; `.arpa` pomijane.
+- Kody błędów `l2.read-failed`, `l2.attribution-unavailable`, `l1.connections-failed`, `dynamic-baseline.invalid`. Awaria czujnika obniża pokrycie i nie tworzy findingu.
+- Otwarty wskaźnik kompromitacji wstrzymuje naprawy w cyklu (`auto-remediate/skipped`), także na `test/*`.
+- Kontrakt baseline'u dynamicznego: `schemas/dynamic-baseline.schema.json` (ścisły dla `dns` i `beaconing`), `policy_lint.py --dynamic`, przykład `examples/dynamic-baseline.yml`. Agent sprawdza plik i zgodność `router_id`; błąd daje `dynamic-baseline.invalid`, a reguły korzystające z pliku nie są oceniane.
+- Migawka: `/ip/firewall/raw` i `/ip/firewall/mangle` (`local.drift.firewall-raw`, `local.drift.firewall-mangle`). Reguła `notrack` ukrywa sesję w tablicy połączeń, a `mangle` może skierować ruch inną trasą. Po wdrożeniu dopisać `firewall_raw: []` i `firewall_mangle: []` do `baseline-state.yml` (zasób spoza baseline nie jest oceniany).
+- Brak `current/conn.log` (np. po `zeekctl stop`) to `l2.read-failed`: puste okno nie rozwiązuje findingów L2.
+### Zmienione
+- `policy.dynamic.dga`: `assert` z `min_label_length: 12` i `min_distinct: 3`.
+- `collection.l2`: `degraded` ze źródłem `zeek` i oknem, dopóki nie ma RITA; pokrycie pozostaje `partial`.
 
 ## [v0.4.0-lab] — 2026-11-07
 ### Dodane

@@ -34,8 +34,8 @@ def _set_text(finding: Finding) -> str:
 
 def _plan(finding: Finding, mode: str, hold: str | None) -> tuple[str, str, str]:
     v = finding.violation
-    if v.ioc:
-        return "alert", "proposed", "R8: wskaźnik kompromitacji, wyłącznie alert"
+    if v.ioc or (v.trust or {}).get("divergence"):
+        return "alert", "proposed", "R8: wskaźnik kompromitacji lub rozbieżność warstw, wyłącznie alert"
     if v.rule_source == "local" and v.drift:
         return "open-pr", "proposed", "R8: drift, decyzja człowieka przez PR"
     if v.rule_source == "local":

@@ -63,8 +63,30 @@ CLEAN = {
     ("user",): [{".id": "*1", "name": "monitor", "disabled": False}],
     ("system", "scheduler"): [],
     ("ip", "firewall", "filter"): [{".id": "*1", "chain": "input", "action": "drop", "comment": "BL"}],
+    ("ip", "firewall", "raw"): [],
+    ("ip", "firewall", "mangle"): [],
     ("ppp", "secret"): [],
+    ("ip", "firewall", "connection", "tracking"): [{"enabled": "auto", "active-ipv4": True}],
+    ("ip", "firewall", "connection"): [],
 }
+WAN = "192.168.20.22"
+DYNAMIC_BASELINE = {"schema_version": "1.0", "router_id": "r2",
+                    "dns": {"allowed_resolvers": ["1.1.1.1", "9.9.9.9"], "alert_on_other_resolver": True}}
+ZEEK_FIXTURES = ROOT / "tests" / "fixtures" / "zeek"
+
+
+def zeek_header(kind: str) -> tuple[str, list[str]]:
+    lines = (ZEEK_FIXTURES / f"{kind}.log").read_text(encoding="utf-8").splitlines(keepends=True)
+    header = "".join(line for line in lines if line.startswith("#") and not line.startswith("#close"))
+    fields = next(line for line in lines if line.startswith("#fields")).rstrip("\n").split("\t")[1:]
+    return header, fields
+
+
+def zeek_text(kind: str, rows: list[dict]) -> str:
+    """Plik w formacie Zeeka: kolumny z nagłówka wzorca, brakujące pola jako '-'."""
+    header, fields = zeek_header(kind)
+    body = "".join("\t".join(str(row.get(f, "-")) for f in fields) + "\n" for row in rows)
+    return header + body
 
 
 class MockApi:
@@ -118,6 +140,13 @@ class Lab:
         files = sorted(self.reports_dir.rglob("*.json")) if self.reports_dir.exists() else []
         return [json.loads(p.read_text(encoding="utf-8")) for p in files]
 
+    @property
+    def zeek_current(self) -> Path:
+        return self.paths.zeek_dir / "current"
+
+    def zeek(self, kind: str, rows: list[dict]):
+        (self.zeek_current / f"{kind}.log").write_text(zeek_text(kind, rows), encoding="utf-8")
+
     def write_site(self, relative, text):
         (self.site / relative).write_text(text, encoding="utf-8")
         git(self.site, "add", "-A")
@@ -140,14 +169,21 @@ def lab(tmp_path):
         "routers": [{"router_id": "r2", "profile": "ros6", "path": "routers/r2"}]}), encoding="utf-8")
     (site / "routers/r2/inventory.yml").write_text(yaml.safe_dump({
         "router_id": "r2", "profile": "ros6", "local_policy": "routers/r2/local-policy.yml",
-        "addressing": {"mgmt_address": "10.100.2.1", "agent_source": "10.100.2.10"}}), encoding="utf-8")
+        "dynamic_baseline": "routers/r2/dynamic-baseline.yml",
+        "addressing": {"mgmt_address": "10.100.2.1", "agent_source": "10.100.2.10",
+                       "wan_address": f"{WAN}/24"}}), encoding="utf-8")
+    (site / "routers/r2/dynamic-baseline.yml").write_text(yaml.safe_dump(DYNAMIC_BASELINE), encoding="utf-8")
     (site / "routers/r2/local-policy.yml").write_text(LOCAL_POLICY, encoding="utf-8")
     baseline = build_state(fetch_resources(MockApi(CLEAN)))
     (site / "routers/r2/baseline-state.yml").write_text(yaml.safe_dump(baseline), encoding="utf-8")
     git(site, "init", "-q")
     git(site, "add", "-A")
     git(site, "commit", "-qm", "start")
-    return Lab(Paths(app_dir=app, etc_dir=etc, data_dir=tmp_path / "data", site_dir=site), site)
+    zeek = tmp_path / "zeek"
+    (zeek / "current").mkdir(parents=True)
+    for kind in ("conn", "dns"):
+        (zeek / "current" / f"{kind}.log").write_text(zeek_text(kind, []), encoding="utf-8")
+    return Lab(Paths(app_dir=app, etc_dir=etc, data_dir=tmp_path / "data", site_dir=site, zeek_dir=zeek), site)
 
 
 def only(reports, rule):
@@ -177,7 +213,8 @@ def test_clean_first_run_reports_inconclusive_until_l2(lab):
     assert rep["findings"] == [] and rep["actions"] == []
     assert rep["verdict"]["posture"] == "inconclusive" and rep["verdict"]["coverage"] == "partial"
     assert rep["collection"]["l1"]["status"] == "ok"
-    assert rep["collection"]["l2"] == {"required": True, "status": "unavailable", "note": cli.LAYER_PENDING["l2"]}
+    l2 = rep["collection"]["l2"]
+    assert l2["status"] == "degraded" and l2["sources"] == ["zeek"] and l2["note"] == cli.LAYER_PENDING["l2"]
     assert rep["policy"]["evaluation_mode"] == "what-if"
     assert rep["policy"]["universal_version"] == TAG and rep["policy"]["universal_commit"] == COMMIT
     assert re.fullmatch(r"[0-9a-f]{40}", rep["policy"]["local_commit"])
@@ -314,6 +351,20 @@ def test_new_firewall_rule_is_drift(lab):
     finding = only(lab.reports(), "local.drift.firewall-filter")[0]
     assert finding["evidence"]["expected"] is None
     assert finding["evidence"]["observed"]["action"] == "accept"
+
+
+@pytest.mark.parametrize("menu,rule,row", [
+    ("ip__firewall__raw", "local.drift.firewall-raw",
+     {".id": "*1", "chain": "output", "protocol": "icmp", "dst-address": "8.8.4.4", "action": "notrack"}),
+    ("ip__firewall__mangle", "local.drift.firewall-mangle",
+     {".id": "*1", "chain": "prerouting", "action": "mark-routing", "new-routing-mark": "tunel"}),
+])
+def test_raw_and_mangle_rule_is_drift(lab, menu, rule, row):
+    """notrack ukrywa sesję w tablicy połączeń: przyczyna rozbieżności musi być widoczna w fazie statycznej."""
+    assert lab.run(router(**{menu: [row]})) == 0
+    finding = only(lab.reports(), rule)[0]
+    assert finding["evidence"]["expected"] is None and finding["evidence"]["observed"]["action"] == row["action"]
+    assert action_of(lab.reports()[-1], finding)["type"] == "open-pr"
 
 
 def test_local_rule_finding(lab):

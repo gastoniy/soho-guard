@@ -5,6 +5,7 @@ wynik agenta, a nie powtarzać ten sam kod.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -62,8 +63,14 @@ def should_report(prev_state: dict | None, posture: str, coverage: str, reconcil
     return sorted(error_kinds) != sorted(prev_error_kinds)
 
 
+L2_EVIDENCE = "zeek"
+STATIC_TRUST = {"observed_by": ["L1"], "corroborated_by": [], "contradicted_by": [], "divergence": False}
+
+
 def _evidence(finding: Finding, run_id: str) -> dict:
     v = finding.violation
+    if v.evidence is not None:
+        return {"type": "behavioral", **v.evidence, "local_ref": local_ref(run_id, L2_EVIDENCE)}
     if v.rule == ACCESS_LOST_RULE:
         return {"type": "access", "stage": "l1-auth", "result": "rejected",
                 "local_ref": local_ref(run_id, "l1")}
@@ -78,12 +85,12 @@ def _finding_doc(finding: Finding, run_id: str) -> dict:
         "rule": v.rule,
         "rule_source": v.rule_source,
         "also_matched": sorted(v.also_matched),
-        "phase": "static",
+        "phase": v.phase,
         "severity": v.severity,
         "ioc": v.ioc,
         "status": finding.status,
         "first_seen_at": finding.first_seen_at,
-        "trust": {"observed_by": ["L1"], "corroborated_by": [], "contradicted_by": [], "divergence": False},
+        "trust": copy.deepcopy(v.trust or STATIC_TRUST),
         "evidence": _evidence(finding, run_id),
     }
 

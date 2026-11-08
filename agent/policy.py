@@ -18,6 +18,14 @@ def load_universal(policy_dir: Path) -> list[dict]:
     return rules
 
 
+def load_dynamic(policy_dir: Path) -> list[dict]:
+    """Reguły fazy dynamicznej (detector/assert)."""
+    rules: list[dict] = []
+    for path in sorted((policy_dir / "dynamic").glob("*.yml")):
+        rules.extend(yaml.safe_load(path.read_text(encoding="utf-8"))["rules"])
+    return rules
+
+
 def load_local(path: Path) -> tuple[dict, list[str]]:
     """Zwraca (dokument, błędy). Przy błędzie polityka lokalna jest pusta: drift działa
     z ustawieniami domyślnymi, a przebieg zgłasza obniżone pokrycie."""

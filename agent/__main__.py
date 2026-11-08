@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent import evidence, l1_router, mitigate, policy, report
+from agent import dynamic_eval, evidence, l1_router, l2_zeek, mitigate, policy, report
 from agent.config import ConfigError, Context, Paths, load_context
 from agent.findings import ACCESS_LOST_RULE, access_lost_violation, fingerprint, reconcile
 from agent.publish import MAIN, Publisher, PublishError, should_publish, state_digest
@@ -25,7 +25,9 @@ EXIT_USAGE = 2
 EXIT_BUSY = 3
 MAX_NOTE = 500
 TEST_BRANCH = re.compile(r"^test/[a-z0-9][a-z0-9-]*$")
-LAYER_PENDING = {"l2": "warstwa L2 dochodzi w iteracji 4", "l3": "warstwa L3 dochodzi w iteracji 5"}
+LAYER_PENDING = {"l2": "wykrywanie statystyczne (RITA) dochodzi w iteracji 5",
+                 "l3": "warstwa L3 dochodzi w iteracji 5"}
+SAMPLES_FILE = "l2-samples.json"
 
 
 def _utc_now() -> datetime:
@@ -50,7 +52,28 @@ def _note(items: list[str]) -> str:
     return "; ".join(items)[:MAX_NOTE]
 
 
-def _collection(l1: l1_router.L1Result, notes: list[str]) -> dict:
+def _read_samples(path: Path) -> list[dict]:
+    """Utrata próbek tylko chwilowo osłabia wykrywanie rozbieżności, więc nie zatrzymuje cyklu."""
+    try:
+        ring = json.loads(path.read_text(encoding="utf-8"))
+        return [s for s in ring if isinstance(s.get("at"), (int, float)) and isinstance(s.get("targets"), list)]
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, AttributeError) as exc:
+        print(f"[WARN] {path.name}: próbki pominięte ({exc})", file=sys.stderr)
+        return []
+
+
+def _l2_layer(zeek: l2_zeek.ZeekData | None, reason: str | None, notes: list[str]) -> dict:
+    """D4: bez RITA warstwa L2 jest co najwyżej degraded, więc pokrycie zostaje partial."""
+    if zeek is None:
+        return {"required": True, "status": "unavailable", "note": _note([reason or "brak danych L2"])}
+    return {"required": True, "status": "degraded", "sources": ["zeek"],
+            "window": {"from": dynamic_eval.iso(zeek.since), "to": dynamic_eval.iso(zeek.until)},
+            "note": _note([LAYER_PENDING["l2"], *notes])}
+
+
+def _collection(l1: l1_router.L1Result, notes: list[str], l2: dict) -> dict:
     if l1.state is None:
         status = "unavailable"
     elif l1.failed_menus or notes:
@@ -62,7 +85,7 @@ def _collection(l1: l1_router.L1Result, notes: list[str]) -> dict:
         layer["note"] = _note(notes)
     return {
         "l1": layer,
-        "l2": {"required": True, "status": "unavailable", "note": LAYER_PENDING["l2"]},
+        "l2": l2,
         "l3": {"required": False, "status": "unavailable", "note": LAYER_PENDING["l3"]},
     }
 
@@ -114,15 +137,16 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
                   f"site.yml wskazuje {ctx.universal_pin}, wdrożone jest {ctx.release_tag}")
 
     universal = policy.load_universal(ctx.paths.policy_dir)
+    dynamic_rules = policy.load_dynamic(ctx.paths.policy_dir)
     local_doc, local_errors = policy.load_local(ctx.local_policy_path)
     notes: list[str] = []
     if local_errors:
         add_error("evaluate", "local-policy.invalid", _note(local_errors))
         notes.append("polityka lokalna nieważna, drift z ustawieniami domyślnymi")
-    if ctx.config_errors:
+    if any(code == "baseline.invalid" for code, _ in ctx.config_errors):
         notes.append("wzorzec baseline nieważny")
 
-    l1 = l1_router.collect(ctx, connector)
+    l1 = l1_router.collect(ctx, connector, clock=clock)
     for code, message in l1.errors:
         add_error("collect-l1", code, message)
 
@@ -143,6 +167,33 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         for item in result.unevaluated:
             print(f"[WARN] {item['rule']}: {item['reason']}", file=sys.stderr)
 
+    # L2: okno logów Zeeka i próbki tablicy połączeń z tego oraz wcześniejszych cykli.
+    now = clock().timestamp()
+    samples_path = out_dir / SAMPLES_FILE
+    ring = dynamic_eval.merge_samples(_read_samples(samples_path), l1.samples, run_id, now)
+    zeek = l2_reason = None
+    l2_notes = [l1.samples_note] if l1.samples_note else []
+    if any(code == "dynamic-baseline.invalid" for code, _ in ctx.config_errors):
+        l2_notes.append("baseline dynamiczny nieważny")
+    if ctx.wan_address is None:
+        l2_reason = "inventory.yml: brak addressing.wan_address, ruchu nie da się przypisać"
+        add_error("collect-l2", "l2.attribution-unavailable", l2_reason)
+    else:
+        try:
+            zeek = l2_zeek.read(ctx.paths.zeek_dir, ctx.wan_address, now)
+        except l2_zeek.ZeekError as exc:
+            l2_reason = "logi Zeeka nieczytelne"
+            add_error("collect-l2", "l2.read-failed", str(exc))
+    dynamic = dynamic_eval.evaluate(dynamic_rules, zeek, ring if l1.samples else None,
+                                    ctx.dynamic_baseline, l2_reason)
+    result.violations += dynamic.violations
+    result.evaluated_rules |= dynamic.evaluated_rules
+    result.known_rules |= {r["id"] for r in dynamic_rules}
+    if zeek is not None and dynamic.unevaluated:
+        l2_notes.append(f"nie oceniono: {', '.join(u['rule'] for u in dynamic.unevaluated)}")
+        for item in dynamic.unevaluated:
+            print(f"[WARN] {item['rule']}: {item['reason']}", file=sys.stderr)
+
     prev_version = (prev_state or {}).get("policy", {}).get("universal_version", ctx.release_tag)
     prev_digest = runtime.get("local_digest", ctx.local_digest)
     reconciled = reconcile(
@@ -156,11 +207,15 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         local_changed=prev_digest != ctx.local_digest,
         remediation_attempted=set(runtime.get("remediation_attempted", [])),
     )
-    hold = None
+    holds = []
     if mode == mitigate.FULL and publisher.branch == MAIN and ctx.universal_pin != ctx.release_tag:
-        hold = "wersja polityki niezgodna z site.yml, zmiany na routerze wstrzymane"
+        holds.append("wersja polityki niezgodna z site.yml")
+    # D5: przy podejrzeniu przejęcia automatyczne zmiany mogłyby zatrzeć ślady (ADR-003).
+    if any(f["compromise_indicator"] for f in reconciled.open_findings):
+        holds.append("otwarty wskaźnik kompromitacji")
+    hold = f"{', '.join(holds)}: zmiany na routerze wstrzymane" if holds else None
     actions = mitigate.plan_actions(reconciled.findings, mode, hold)
-    collection = _collection(l1, notes)
+    collection = _collection(l1, notes, _l2_layer(zeek, l2_reason, l2_notes))
     coverage = report.derive_coverage(collection)
 
     def assemble():
@@ -226,11 +281,17 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         data = l1.raw and evidence.without_secrets(l1.raw)
         evidence.store(out_dir / "evidence", run_id, "l1",
                        data or {"result": "rejected" if l1.auth_rejected else "unavailable"})
+        behavioral = [f for f in reconciled.findings if f.violation.evidence is not None]
+        if behavioral:
+            evidence.store(out_dir / "evidence", run_id, report.L2_EVIDENCE, {"findings": [
+                {"fingerprint": f.fingerprint, "rule": f.violation.rule, "object_key": f.violation.object_key,
+                 **(f.violation.detail or {})} for f in behavioral]})
         moment = started.strftime("%Y/%m")
         name = f"{report_doc['integrity']['report_seq']:06d}-{run_id}.json"
         reports_dir = publisher.reports_dir if publisher else out_dir / "reports" / "what-if"
         report.write_atomic(reports_dir / moment / name, report_bytes)
     report.write_atomic(state_path, report.to_bytes(state_doc))
+    report.write_atomic(samples_path, json.dumps(ring).encode("utf-8"))
     runtime_doc = {"local_digest": ctx.local_digest, "error_kinds": error_kinds,
                    "published": runtime.get("published"), "remediation_attempted": sorted(attempted),
                    "publish_error": None if sync_error else runtime.get("publish_error")}

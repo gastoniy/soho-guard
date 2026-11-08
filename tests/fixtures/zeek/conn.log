@@ -1,0 +1,11 @@
+#separator \x09
+#set_separator	,
+#empty_field	(empty)
+#unset_field	-
+#path	conn
+#open	2026-11-07-21-00-00
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	service	duration	orig_bytes	resp_bytes	conn_state	local_orig	local_resp	missed_bytes	history	orig_pkts	orig_ip_bytes	resp_pkts	resp_ip_bytes	tunnel_parents	ip_proto
+#types	time	string	addr	port	addr	port	enum	string	interval	count	count	string	bool	bool	count	string	count	count	count	count	set[string]	count
+1794083526.787746	CAbc1	192.168.20.21	42686	140.82.121.4	22	tcp	ssh	88.076105	1200	2400	SF	F	F	0	ShAdDaFf	20	2240	18	3340	-	6
+1794083600.100000	CAbc2	192.168.20.22	53000	9.9.9.9	53	udp	dns	0.020000	40	120	SF	F	F	0	Dd	1	68	1	148	-	17
+#close	2026-11-07-22-00-00

@@ -35,6 +35,7 @@ class Paths:
     etc_dir: Path = Path("/etc/soho-guard")
     data_dir: Path = Path("/var/lib/soho-guard")
     site_dir: Path = Path("/var/lib/soho-guard/site-lab")
+    zeek_dir: Path = Path("/opt/zeek/logs")
 
     @property
     def policy_dir(self) -> Path:
@@ -71,6 +72,9 @@ class Context:
     baseline: dict
     baseline_rel: str
     paths: Paths
+    # Atrybucja L2 po adresie WAN bez maski (ADR-004). None: L2 nie da się przypisać.
+    wan_address: str | None = None
+    dynamic_baseline: dict = field(default_factory=dict)
     config_errors: list[tuple[str, str]] = field(default_factory=list)
     trigger: str = "manual"
 
@@ -139,6 +143,16 @@ def _ip(inventory_path: Path, addressing: dict, name: str) -> str:
     return value
 
 
+def _wan(inventory_path: Path, addressing: dict) -> str | None:
+    value = addressing.get("wan_address")
+    if value in (None, ""):
+        return None
+    try:
+        return str(ipaddress.ip_interface(value).ip)
+    except ValueError as exc:
+        raise ConfigError(f"{inventory_path}: addressing.wan_address musi być adresem IP, jest {value!r}") from exc
+
+
 def _file_digest(*paths: Path) -> str:
     digest = hashlib.sha256()
     for path in paths:
@@ -168,6 +182,13 @@ def load_context(router_id: str, paths: Paths) -> Context:
         except ConfigError as exc:
             baseline = {}
             config_errors.append(("baseline.invalid", str(exc)))
+        dynamic_ref = inventory.get("dynamic_baseline")
+        dynamic_path = paths.site_dir / dynamic_ref if isinstance(dynamic_ref, str) else router_dir / "dynamic-baseline.yml"
+        try:
+            dynamic_baseline = _load_yaml(dynamic_path)
+        except ConfigError as exc:
+            dynamic_baseline = {}
+            config_errors.append(("dynamic-baseline.invalid", str(exc)))
         local_ref = inventory.get("local_policy")
         local_path = paths.site_dir / local_ref if isinstance(local_ref, str) else router_dir / "local-policy.yml"
         digest = _file_digest(baseline_path, local_path)
@@ -199,5 +220,7 @@ def load_context(router_id: str, paths: Paths) -> Context:
         baseline=baseline,
         baseline_rel=baseline_path.relative_to(paths.site_dir).as_posix(),
         paths=paths,
+        wan_address=_wan(inventory_path, addressing),
+        dynamic_baseline=dynamic_baseline,
         config_errors=config_errors,
     )

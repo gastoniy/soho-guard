@@ -1,9 +1,10 @@
 """L2 statystyczna: wyniki RITA z ClickHouse (DYN-011b).
 
-Każdy import RITA w zbiorze kroczącym analizuje całe okno 24 h, więc wiersze
-threat_mixtape z ostatniego zakończonego importu to pełny bieżący wynik. Agent pyta
-o beacony tylko po nowym imporcie, a wynik trzyma lokalnie: między importami finding
-nie znika.
+Import zapisuje w threat_mixtape tylko pary przeliczone w tym imporcie (ostatni może
+nie mieć żadnego wiersza). Bieżący wynik to najnowsza ocena każdej pary (hash), której
+last_seen mieści się w oknie danych ostatniego importu; tak samo liczy `rita view`
+(porównanie na węźle 2026-11-08). Agent pyta o beacony tylko po nowym imporcie, a wynik
+trzyma lokalnie: między importami finding nie znika.
 """
 from __future__ import annotations
 
@@ -99,14 +100,15 @@ def ipv4(value: str | None) -> str | None:
     return str(ip) if ip else None
 
 
-def beacons(client, import_id: str, wan: str) -> list[dict]:
-    if not all(c in "0123456789ABCDEF" for c in import_id):
-        raise RitaError("niepoprawny identyfikator importu")
+def beacons(client, since: float, wan: str) -> list[dict]:
+    """Najnowsza ocena każdej pary z danymi w oknie; próg wyniku dopiero po jej wyborze,
+    żeby starsza, wyższa ocena nie zastąpiła nowszej."""
     rows = client.query(
-        "SELECT IPv6NumToString(src) AS src, IPv6NumToString(dst) AS dst, fqdn, "
+        "SELECT * FROM (SELECT IPv6NumToString(src) AS src, IPv6NumToString(dst) AS dst, fqdn, "
         "arrayMap(x -> IPv6NumToString(x), server_ips) AS server_ips, port_proto_service, beacon_type, "
-        "beacon_score, count, total_bytes, toUnixTimestamp(last_seen) AS last_seen "
-        f"FROM {DATABASE}.threat_mixtape WHERE hex(import_id) = '{import_id}' AND beacon_score > 0")
+        "beacon_score, count, total_bytes, toUnixTimestamp(last_seen) AS last_seen, hex(import_id) AS import_id "
+        f"FROM {DATABASE}.threat_mixtape WHERE last_seen >= toDateTime({int(since)}) "
+        "ORDER BY analyzed_at DESC LIMIT 1 BY hash) WHERE beacon_score > 0")
     found = []
     for row in rows:
         if ipv4(row.get("src")) != wan:
@@ -132,7 +134,7 @@ def collect(client, wan: str, cache_path: Path) -> RitaData | None:
     cached = _read_cache(cache_path)
     if cached and cached["import_id"] == current.import_id and cached.get("wan") == wan:
         return RitaData(current, cached["rows"])
-    return RitaData(current, beacons(client, current.import_id, wan), fresh_query=True)
+    return RitaData(current, beacons(client, current.since, wan), fresh_query=True)
 
 
 def save(data: RitaData, wan: str, cache_path: Path, write) -> None:

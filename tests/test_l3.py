@@ -54,7 +54,9 @@ class FakeRita:
             raise l2_rita.RitaError(self.fail)
         if "metadatabase.imports" in sql:
             return [{"id": self.import_id, "ended": self.ended, "since": self.ended - 86400, "until": self.ended}]
-        assert f"hex(import_id) = '{self.import_id}'" in sql
+        assert "ORDER BY analyzed_at DESC LIMIT 1 BY hash" in sql
+        assert f"last_seen >= toDateTime({int(self.ended - 86400)})" in sql
+        assert sql.index("LIMIT 1 BY hash") < sql.index("beacon_score > 0")
         self.beacon_queries += 1
         return [dict(r) for r in self.rows]
 
@@ -138,7 +140,7 @@ def test_ipv4_mapped_addresses():
 
 def test_beacons_only_for_router():
     rita = FakeRita([row(), row(src="192.168.20.21")])
-    rows = l2_rita.beacons(rita, "AB12", WAN)
+    rows = l2_rita.beacons(rita, rita.ended - 86400, WAN)
     assert [(r["src"], r["dst"]) for r in rows] == [(WAN, C2)]
 
 
@@ -342,6 +344,18 @@ def test_dga_resolver_is_not_checked_in_ti(lab, clock):  # noqa: F811
     ti = FakeTi(pulses=5)
     assert cycle(lab, clock, FakeRita(), ti) == 0
     assert base.only(lab.reports(), "policy.dynamic.dga") and ti.calls == []
+
+
+def test_empty_last_import_keeps_beacon(lab, clock):  # noqa: F811
+    """Węzeł 2026-11-08: import bez wierszy. Wynik to najnowsza ocena pary w oknie, więc
+    beacon nie znika, gdy ostatni import go nie przeliczył."""
+    rita = FakeRita([row()])
+    assert cycle(lab, clock, rita) == 0
+    rita.import_id, rita.ended = "CD34", T0 + 3000
+    clock.later(3000)
+    assert cycle(lab, clock, rita) == 0
+    assert rita.beacon_queries == 2 and len(lab.reports()) == 1
+    assert [f["rule"] for f in lab.state()["open_findings"]] == [BEACON]
 
 
 def test_rita_cache_written_only_after_new_import(lab, clock):  # noqa: F811

@@ -225,7 +225,7 @@ def beacon(rule: dict, rita, entries: list[dict], zeek_names: dict[str, set[str]
             "flow_count": max(int(row.get("count") or 1), 1), "bytes_total": int(row.get("total_bytes") or 0),
             "window": window, "detector": rule["detector"], "score": round(min(max(score, 0.0), 1.0), 3)}}
         trust = {"observed_by": ["L2"], "corroborated_by": [], "contradicted_by": [], "divergence": False}
-        detail = {"import_id": rita.imported.import_id, "beacon_type": row.get("beacon_type"), "fqdn": fqdn or None,
+        detail = {"import_id": row.get("import_id") or rita.imported.import_id, "beacon_type": row.get("beacon_type"), "fqdn": fqdn or None,
                   "port_proto_service": row.get("port_proto_service"), "score": score,
                   "names": sorted(names)[:MAX_DETAIL]}
         found.append(_violation(rule, RITA_PATH, key, evidence, trust, detail))

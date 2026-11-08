@@ -3,6 +3,8 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+
+## [v0.5.0-lab] — 2026-11-08
 ### Dodane
 - Agent, iteracja 4: warstwa L2 z logów Zeeka (`conn.log`, `dns.log`) z mirrora WAN, przypisanie po `addressing.wan_address` bez maski. Każdy cykl ocenia od nowa ostatnie 60 min (bez kursora), więc finding znika po godzinie bez zdarzeń.
 - `integrity.divergence.connections`: 3 próbki `/ip/firewall/connection` co 5 s w cyklu, przechowywane lokalnie przez 60 min bez adresów LAN. Dowodem jest tylko przepływ zestawiony i trwający w chwili próbki; finding po brakach w co najmniej 3 różnych cyklach i bez trafienia celu w oknie. Przy wyłączonym śledzeniu połączeń reguła nie jest oceniana.

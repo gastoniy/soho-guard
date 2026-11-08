@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from agent.normalize import build_state
+from agent.policy import check_dynamic_baseline
 
 ROUTER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 RELEASE_TAG = re.compile(r"^v([0-9]+\.[0-9]+\.[0-9]+)(-lab(\.rc[0-9]+)?)?$")
@@ -186,6 +187,9 @@ def load_context(router_id: str, paths: Paths) -> Context:
         dynamic_path = paths.site_dir / dynamic_ref if isinstance(dynamic_ref, str) else router_dir / "dynamic-baseline.yml"
         try:
             dynamic_baseline = _load_yaml(dynamic_path)
+            issues = check_dynamic_baseline(dynamic_baseline, router_id, dynamic_path.name)
+            if issues:
+                raise ConfigError("; ".join(issues)[:500])
         except ConfigError as exc:
             dynamic_baseline = {}
             config_errors.append(("dynamic-baseline.invalid", str(exc)))

@@ -313,6 +313,42 @@ def test_unreadable_zeek_keeps_open_findings(lab, clock):  # noqa: F811
     assert [f["rule"] for f in lab.state()["open_findings"]] == [ROGUE]
 
 
+def test_stopped_zeek_keeps_open_findings(lab, clock):  # noqa: F811
+    """zeekctl stop archiwizuje bieżące logi: puste okno nie może rozwiązać findingu."""
+    lab.zeek("dns", [query("example.com", "8.8.8.8")])
+    assert cycle(lab, clock) == 0
+    (lab.zeek_current / "conn.log").unlink()
+    (lab.zeek_current / "dns.log").unlink()
+    clock.later(7200)
+    assert cycle(lab, clock) == 0
+    rep = lab.reports()[-1]
+    assert rep["resolved"] == [] and rep["collection"]["l2"]["status"] == "unavailable"
+    assert "l2.read-failed" in base.error_codes(rep)
+    assert [f["rule"] for f in lab.state()["open_findings"]] == [ROGUE]
+
+
+def test_missing_dns_log_alone_is_not_failure(lab, clock):  # noqa: F811
+    (lab.zeek_current / "dns.log").unlink()
+    assert cycle(lab, clock) == 0
+    rep = lab.reports()[-1]
+    assert rep["collection"]["l2"]["status"] == "degraded" and base.error_codes(rep) == set()
+
+
+@pytest.mark.parametrize("text,detail", [
+    ("schema_version: \"1.0\"\nrouter_id: r2\ndns: {allowed_resolver: [1.1.1.1]}\n", "allowed_resolver"),
+    ("schema_version: \"1.0\"\nrouter_id: r1\n", "router_id 'r1'"),
+])
+def test_dynamic_baseline_contract_in_agent(lab, clock, text, detail):  # noqa: F811
+    lab.write_site("routers/r2/dynamic-baseline.yml", text)
+    lab.zeek("dns", [query("example.com", "8.8.8.8")])
+    assert cycle(lab, clock) == 0
+    rep = lab.reports()[-1]
+    error = next(e for e in rep["run"]["errors"] if e["code"] == "dynamic-baseline.invalid")
+    assert detail in error["message"]
+    assert not base.only([rep], ROGUE)
+    assert "baseline dynamiczny nieważny" in rep["collection"]["l2"]["note"]
+
+
 def test_tracking_disabled_leaves_divergence_unevaluated(lab, clock):  # noqa: F811
     lab.zeek("conn", [flow(ts=T0 - 60, duration=7200)])
     data = router(ip__firewall__connection__tracking=[{"enabled": "no"}])

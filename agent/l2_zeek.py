@@ -75,6 +75,11 @@ def _files(zeek_dir: Path, kind: str, since: float) -> list[Path]:
     current = zeek_dir / "current"
     if not current.is_dir():
         raise ZeekError(f"brak katalogu {current}")
+    # Zatrzymany Zeek (zeekctl stop) archiwizuje bieżące logi. Puste okno wyglądałoby wtedy
+    # jak brak zdarzeń i rozwiązywałoby findingi, więc brak conn.log to brak danych.
+    # Pełna kontrola świeżości logów: samokontrola (iteracja 6).
+    if kind == "conn" and not (current / "conn.log").exists():
+        raise ZeekError(f"brak {current / 'conn.log'}: Zeek nie zapisuje logów")
     found = [current / f"{kind}.log"] if (current / f"{kind}.log").exists() else []
     moment = datetime.fromtimestamp(since, timezone.utc)
     # Katalogi dzienne mają datę lokalną węzła: dzień wcześniej i później obejmuje każdą strefę.

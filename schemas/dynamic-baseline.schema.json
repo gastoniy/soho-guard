@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soho-guard.local/schemas/1.0.0/dynamic-baseline.schema.json",
+  "title": "soho-guard: baseline dynamiczny routera",
+  "description": "Plik routers/<router_id>/dynamic-baseline.yml pisany ręcznie (ADR-006): legalne zachowania instalacji w czasie, czyli lokalna część fazy dynamicznej. Progi uniwersalne są w policy/dynamic/. Sekcje dns i beaconing czytają detektory, więc ich pola są sprawdzane ściśle; pozostałe sekcje nie mają jeszcze detektorów. Poprawność adresów i portów sprawdza tools/policy_lint.py --dynamic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "router_id"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "site_id": { "$ref": "common.schema.json#/$defs/identifier" },
+    "router_id": { "$ref": "common.schema.json#/$defs/identifier" },
+    "provenance": {
+      "description": "Skąd pochodzą wartości: okno uznane za czyste i zatwierdzający.",
+      "type": "object"
+    },
+    "throughput": { "description": "Bez detektora w MVP.", "type": "object" },
+    "router_egress": { "description": "Bez detektora w MVP: dopasowanie nazw do adresów IP dopiero z RITA.", "type": "object" },
+    "router_traffic": { "description": "Bez detektora w MVP.", "type": "object" },
+    "ti": { "description": "Dostawcy TI instalacji (warstwa L3).", "type": "object" },
+    "beaconing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_periodic": {
+          "description": "Legalne połączenia periodyczne: dopasowanie po nazwie celu i proto/port. dst \"*\" = dowolny cel na tym proto/porcie.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["src", "dst", "proto", "port"],
+            "properties": {
+              "src": { "const": "router" },
+              "dst": { "type": "string", "minLength": 1, "maxLength": 253 },
+              "proto": { "enum": ["tcp", "udp"] },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "desc": { "type": "string", "maxLength": 200 }
+            }
+          }
+        }
+      }
+    },
+    "dns": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_resolvers": {
+          "description": "Resolwery, z którymi router może rozmawiać na porcie 53 (policy.dynamic.rogue-resolver).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "alert_on_other_resolver": { "type": "boolean" },
+        "allowed_suffixes": {
+          "description": "Wyjątki detektora DGA (np. CDN): nazwa równa sufiksowi lub w jego poddomenie.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+          }
+        }
+      }
+    }
+  }
+}

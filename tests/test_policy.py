@@ -151,3 +151,44 @@ def test_every_shipped_rule_has_timeline():
     for f in glob.glob(str(POLDIR / "**/*.yml"), recursive=True):
         for r in yaml.safe_load(open(f))["rules"]:
             assert r["trace"].get("timeline"), r["id"]
+
+
+# --- baseline dynamiczny (--dynamic) ---
+def _dynamic(tmp_path, change=None):
+    doc = yaml.safe_load((ROOT / "examples" / "dynamic-baseline.yml").read_text(encoding="utf-8"))
+    if change:
+        change(doc)
+    p = tmp_path / "dynamic-baseline.yml"
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    return pl.lint_dynamic([str(p)])
+
+
+def test_dynamic_example_valid():
+    assert pl.lint_dynamic([str(ROOT / "examples" / "dynamic-baseline.yml")]) == []
+
+
+def test_dynamic_minimal_file_valid(tmp_path):
+    p = tmp_path / "d.yml"
+    p.write_text('schema_version: "1.0"\nrouter_id: r1\n', encoding="utf-8")
+    assert pl.lint_dynamic([str(p)]) == []
+
+
+@pytest.mark.parametrize("change", [
+    lambda d: d["dns"].update(allowed_resolver=d["dns"].pop("allowed_resolvers")),   # literówka
+    lambda d: d.update(dsn={}),                                                       # nieznana sekcja
+    lambda d: d["dns"].update(allowed_resolvers=["1.1.1"]),                           # zły adres
+    lambda d: d["dns"].update(alert_on_other_resolver="tak"),
+    lambda d: d["dns"].update(allowed_suffixes=["CDN.Example"]),
+    lambda d: d["beaconing"]["allowed_periodic"][0].update(port=70000),
+    lambda d: d.pop("router_id"),
+])
+def test_dynamic_errors_rejected(tmp_path, change):
+    assert _dynamic(tmp_path, change)
+
+
+def test_dynamic_cli_mode(tmp_path, capsys):
+    assert pl.main(["--dynamic", str(ROOT / "examples" / "dynamic-baseline.yml")]) == 0
+    p = tmp_path / "d.yml"
+    p.write_text('schema_version: "1.0"\nrouter_id: r1\ndns: {allowed_resolver: []}\n', encoding="utf-8")
+    assert pl.main(["--dynamic", str(p)]) == 1
+    assert "allowed_resolver" in capsys.readouterr().out

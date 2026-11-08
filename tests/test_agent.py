@@ -63,6 +63,8 @@ CLEAN = {
     ("user",): [{".id": "*1", "name": "monitor", "disabled": False}],
     ("system", "scheduler"): [],
     ("ip", "firewall", "filter"): [{".id": "*1", "chain": "input", "action": "drop", "comment": "BL"}],
+    ("ip", "firewall", "raw"): [],
+    ("ip", "firewall", "mangle"): [],
     ("ppp", "secret"): [],
     ("ip", "firewall", "connection", "tracking"): [{"enabled": "auto", "active-ipv4": True}],
     ("ip", "firewall", "connection"): [],
@@ -349,6 +351,20 @@ def test_new_firewall_rule_is_drift(lab):
     finding = only(lab.reports(), "local.drift.firewall-filter")[0]
     assert finding["evidence"]["expected"] is None
     assert finding["evidence"]["observed"]["action"] == "accept"
+
+
+@pytest.mark.parametrize("menu,rule,row", [
+    ("ip__firewall__raw", "local.drift.firewall-raw",
+     {".id": "*1", "chain": "output", "protocol": "icmp", "dst-address": "8.8.4.4", "action": "notrack"}),
+    ("ip__firewall__mangle", "local.drift.firewall-mangle",
+     {".id": "*1", "chain": "prerouting", "action": "mark-routing", "new-routing-mark": "tunel"}),
+])
+def test_raw_and_mangle_rule_is_drift(lab, menu, rule, row):
+    """notrack ukrywa sesję w tablicy połączeń: przyczyna rozbieżności musi być widoczna w fazie statycznej."""
+    assert lab.run(router(**{menu: [row]})) == 0
+    finding = only(lab.reports(), rule)[0]
+    assert finding["evidence"]["expected"] is None and finding["evidence"]["observed"]["action"] == row["action"]
+    assert action_of(lab.reports()[-1], finding)["type"] == "open-pr"
 
 
 def test_local_rule_finding(lab):

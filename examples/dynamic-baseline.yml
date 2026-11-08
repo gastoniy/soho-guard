@@ -1,0 +1,35 @@
+# Przykład routers/<router_id>/dynamic-baseline.yml (ADR-006): legalne zachowania
+# instalacji w czasie, wpisywane ręcznie z okna uznanego za czyste.
+# Sprawdzenie: python3 tools/policy_lint.py --dynamic examples/dynamic-baseline.yml
+schema_version: "1.0"
+site_id: lab
+router_id: r2
+
+provenance:
+  observed_window: "2026-10-20T00:00:00Z/2026-10-22T00:00:00Z"
+  source: manual
+  approved_by: operator
+  note: "okno bez znanych incydentów"
+
+# Bez detektora w MVP: sekcje opisowe.
+throughput: { wan_mbps_normal: 50, alert_above_mbps: 50, sustained_seconds: 60, direction: both }
+router_egress:
+  default: deny
+  allowed:
+    - { desc: "NTP", host: "pool.ntp.org", proto: udp, port: 123 }
+router_traffic: { expected_protocols: [tcp, udp, icmp], max_distinct_dst_5min: 400 }
+
+# rita.beacon (iteracja 5): cel po nazwie i proto/port; "*" = dowolny cel na tym proto/porcie.
+beaconing:
+  allowed_periodic:
+    - { src: router, dst: "*",          proto: udp, port: 123, desc: "NTP z puli" }
+    - { src: router, dst: "github.com", proto: tcp, port: 22,  desc: "publikacja stanu (heartbeat)" }
+
+# policy.dynamic.rogue-resolver i policy.dynamic.dga.
+dns:
+  allowed_resolvers: ["1.1.1.1", "9.9.9.9"]
+  alert_on_other_resolver: true
+  allowed_suffixes: []          # wyjątki DGA, np. CDN
+
+ti:
+  providers: [otx]

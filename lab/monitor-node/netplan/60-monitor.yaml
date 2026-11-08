@@ -22,23 +22,27 @@ network:
       set-name: eth2
       dhcp4: true
       dhcp6: false
-      dhcp4-overrides: {route-metric: 100}
+      dhcp4-overrides: {route-metric: 100, use-dns: false}   # DNS przez routery, nie przez eth2
   vlans:
     eth0.110:                               # -> R1
       id: 110
       link: eth0
       addresses: [10.100.1.10/24]
+      nameservers: {addresses: [1.1.1.1]}
       routes:
         - {to: 10.100.1.0/24, scope: link, table: 101}
         - {to: default, via: 10.100.1.1, table: 101}
+        - {to: 1.1.1.1/32, via: 10.100.1.1}         # DNS węzła przez r1 (tablica główna)
       routing-policy:
         - {from: 10.100.1.10, table: 101}
     eth0.120:                               # -> R2
       id: 120
       link: eth0
       addresses: [10.100.2.10/24]
+      nameservers: {addresses: [9.9.9.9]}
       routes:
         - {to: 10.100.2.0/24, scope: link, table: 102}
         - {to: default, via: 10.100.2.1, table: 102}
+        - {to: 9.9.9.9/32, via: 10.100.2.1}         # DNS węzła przez r2
       routing-policy:
         - {from: 10.100.2.10, table: 102}

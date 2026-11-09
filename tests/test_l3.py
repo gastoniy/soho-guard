@@ -54,7 +54,7 @@ class FakeRita:
             raise l2_rita.RitaError(self.fail)
         if "metadatabase.imports" in sql:
             return [{"id": self.import_id, "ended": self.ended, "since": self.ended - 86400, "until": self.ended}]
-        assert "ORDER BY analyzed_at DESC LIMIT 1 BY hash" in sql
+        assert "ORDER BY analyzed_at DESC, beacon_score DESC LIMIT 1 BY hash" in sql
         assert f"last_seen >= toDateTime({int(self.ended - 86400)})" in sql
         assert sql.index("LIMIT 1 BY hash") < sql.index("beacon_score > 0")
         self.beacon_queries += 1

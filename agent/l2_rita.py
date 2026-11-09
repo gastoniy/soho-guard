@@ -102,13 +102,16 @@ def ipv4(value: str | None) -> str | None:
 
 def beacons(client, since: float, wan: str) -> list[dict]:
     """Najnowsza ocena każdej pary z danymi w oknie; próg wyniku dopiero po jej wyborze,
-    żeby starsza, wyższa ocena nie zastąpiła nowszej."""
+    żeby starsza, wyższa ocena nie zastąpiła nowszej. Jedna analiza zapisuje dla pary
+    kilka wierszy o tym samym analyzed_at (np. wiersz modyfikatorów z wynikiem 0 i wiersz
+    sni z wynikiem beaconu; węzeł, 2026-11-09), więc w obrębie analizy wygrywa najwyższy
+    wynik, tak jak w `rita view`."""
     rows = client.query(
         "SELECT * FROM (SELECT IPv6NumToString(src) AS src, IPv6NumToString(dst) AS dst, fqdn, "
         "arrayMap(x -> IPv6NumToString(x), server_ips) AS server_ips, port_proto_service, beacon_type, "
         "beacon_score, count, total_bytes, toUnixTimestamp(last_seen) AS last_seen, hex(import_id) AS import_id "
         f"FROM {DATABASE}.threat_mixtape WHERE last_seen >= toDateTime({int(since)}) "
-        "ORDER BY analyzed_at DESC LIMIT 1 BY hash) WHERE beacon_score > 0")
+        "ORDER BY analyzed_at DESC, beacon_score DESC LIMIT 1 BY hash) WHERE beacon_score > 0")
     found = []
     for row in rows:
         if ipv4(row.get("src")) != wan:

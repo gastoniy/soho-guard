@@ -64,6 +64,8 @@ chk "zeekctl: running"                         '/opt/zeek/bin/zeekctl status | g
 chk "soho-agent w grupie zeek"                 'id -nG soho-agent | grep -qw zeek'
 chk "agent czyta current/conn.log"             '$A test -r /opt/zeek/logs/current/conn.log'
 chk "agent czyta archiwum dzisiejsze"          '$A sh -c "ls /opt/zeek/logs/$(date -u +%F)/conn.*.log.gz >/dev/null"'
+chk "capture-loss w local.zeek"                'grep -q "^@load misc/capture-loss" /opt/zeek/share/zeek/site/local.zeek'
+chk "capture_loss.log świeży (< 30 min)"       '$A find /opt/zeek/logs/current/capture_loss.log -mmin -30 | grep -q .'
 
 echo "== ClickHouse / RITA"
 chk "port 8123 tylko na 127.0.0.1"             'ss -tlnH "sport = :8123" | grep -q "127.0.0.1:8123" && ! ss -tlnH "sport = :8123" | grep -qE "0\.0\.0\.0:8123|\[::\]:8123"'

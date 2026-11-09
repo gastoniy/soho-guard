@@ -3,6 +3,8 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+### Dodane
+- Zeek w labie: `lab/monitor-node/zeek/local.zeek.fragment` (`@load misc/capture-loss`) dla samokontroli utraty pakietów; `check-c1-prep.sh` sprawdza wpis i świeżość `capture_loss.log`.
 
 ## [v0.6.0-lab] — 2026-11-09
 ### Dodane

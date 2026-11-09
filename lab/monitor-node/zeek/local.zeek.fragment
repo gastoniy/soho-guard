@@ -1,0 +1,4 @@
+# Dopisać na końcu /opt/zeek/share/zeek/site/local.zeek (decyzja 2026-11-09, C1), potem: sudo /opt/zeek/bin/zeekctl deploy
+# capture_loss.log co 15 min: luki w potwierdzeniach TCP (gaps/acks) = pakiety, których Zeek nie widział
+# (mirror OVS lub przeciążenie). Agent: > 1% → L2 degraded; < 500 potwierdzeń → tylko uwaga (selfcheck.py).
+@load misc/capture-loss

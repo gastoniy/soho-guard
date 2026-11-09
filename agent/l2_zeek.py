@@ -114,6 +114,20 @@ def _remember_names(names: dict[str, set[str]], row: dict) -> None:
         names.setdefault(ip, set()).add(query)
 
 
+def latest(zeek_dir: Path, kind: str, wanted: tuple[str, ...], since: float) -> dict | None:
+    """Najnowszy wiersz logu z ts >= since (bieżący plik lub archiwum po rotacji)."""
+    best = None
+    try:
+        for path in _files(zeek_dir, kind, since):
+            for row in _read(path, wanted):
+                ts = _number(row["ts"])
+                if ts is not None and ts >= since and (best is None or ts > best["ts"]):
+                    best = {**row, "ts": ts}
+    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+        raise ZeekError(f"{type(exc).__name__}: {exc}") from exc
+    return best
+
+
 def read(zeek_dir: Path, wan: str, now: float, window_s: int = WINDOW_S) -> ZeekData:
     """Przepływy i zapytania z wan_address, które trwały lub zaczęły się w oknie."""
     data = ZeekData(since=now - window_s, until=now)

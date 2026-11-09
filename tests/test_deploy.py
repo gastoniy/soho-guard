@@ -68,3 +68,26 @@ def test_rita_import_passes_extra_args(tmp_path):
 def test_rita_import_rejects_unknown_mode(tmp_path):
     result, seen, _ = _rita_run(tmp_path, "inne")
     assert result.returncode == 2 and seen == []
+
+
+# --- iteracja 6: retencja i timery na gałęzi testowej ---
+LAB = DEPLOY.parents[1]
+
+
+def test_tmpfiles_retention_rules():
+    rules = [line.split() for line in (LAB / "tmpfiles.d" / "soho-guard.conf").read_text(encoding="utf-8").splitlines()
+             if line.strip() and not line.startswith("#")]
+    assert all(r[0] == "e" and len(r) == 6 and r[1].startswith("/var/lib/soho-guard/") for r in rules)
+    ages = {r[1]: r[5] for r in rules}
+    assert ages["/var/lib/soho-guard/publish/*/*/evidence"] == "30d"
+    assert ages["/var/lib/soho-guard/publish/test/*/*/orphaned"] == "7d"
+    assert not any("outbox" in p or p.endswith(("state.json", "rita.json")) for p in ages)
+
+
+def test_timer_test_branch_dropin():
+    text = (LAB / "systemd" / "agent@.service.d" / "test-branch.conf").read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if line.startswith("ExecStart=")]
+    assert lines[0] == "ExecStart=" and "--publish-branch test/timers" in lines[1]
+    assert "--trigger timer" in lines[1] and "--no-remediate" not in lines[1] and "--dry-run" not in lines[1]
+    unit = (LAB / "systemd" / "agent@.service").read_text(encoding="utf-8")
+    assert lines[1].split("ExecStart=", 1)[1].split(" --publish-branch")[0] in unit

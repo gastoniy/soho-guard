@@ -66,6 +66,9 @@ CLEAN = {
     ("ip", "firewall", "raw"): [],
     ("ip", "firewall", "mangle"): [],
     ("ppp", "secret"): [],
+    ("ip", "address"): [{".id": "*1", "address": "192.168.20.22/24", "interface": "ether1-wan"},
+                        {".id": "*2", "address": "10.100.2.1/24", "interface": "vlan-mgmt"}],
+    ("ip", "dhcp-client"): [],
     ("ip", "firewall", "connection", "tracking"): [{"enabled": "auto", "active-ipv4": True}],
     ("ip", "firewall", "connection"): [],
 }

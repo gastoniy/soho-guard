@@ -10,6 +10,7 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
   - `wan_address` nieobecny w `/ip/address` routera albo klient DHCP na interfejsie WAN (`selfcheck.wan-mismatch`): atrybucja niepewna, cała L2 (Zeek i RITA) `unavailable`.
 - Retencja danych lokalnych: `lab/monitor-node/tmpfiles.d/soho-guard.conf` (dowody 30 dni, `orphaned/` 7 dni; `systemd-tmpfiles`).
 - Wzorzec `lab/monitor-node/systemd/agent@.service.d/test-branch.conf`: timery w trybie pełnym na `test/timers` przed przejściem na `main`.
+- Zeek w labie: `lab/monitor-node/zeek/local.zeek.fragment` (`@load misc/capture-loss`) dla samokontroli utraty pakietów; `check-c1-prep.sh` sprawdza wpis i świeżość `capture_loss.log`.
 ### Zmienione
 - `collection.l2.note` łączy uwagi obniżające status z informacyjnymi (te drugie nie zmieniają `ok`).
 

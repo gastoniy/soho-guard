@@ -214,7 +214,9 @@ def test_clean_first_run_reports_inconclusive_until_l2(lab):
     assert rep["verdict"]["posture"] == "inconclusive" and rep["verdict"]["coverage"] == "partial"
     assert rep["collection"]["l1"]["status"] == "ok"
     l2 = rep["collection"]["l2"]
-    assert l2["status"] == "degraded" and l2["sources"] == ["zeek"] and l2["note"] == cli.LAYER_PENDING["l2"]
+    assert l2["status"] == "degraded" and l2["sources"] == ["zeek"]
+    assert l2["note"] == "RITA nie ma jeszcze zakończonego importu; nie oceniono: policy.dynamic.beacon"
+    assert rep["collection"]["l3"] == {"required": False, "status": "ok", "sources": ["otx"]}
     assert rep["policy"]["evaluation_mode"] == "what-if"
     assert rep["policy"]["universal_version"] == TAG and rep["policy"]["universal_commit"] == COMMIT
     assert re.fullmatch(r"[0-9a-f]{40}", rep["policy"]["local_commit"])

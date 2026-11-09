@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent import dynamic_eval, evidence, l1_router, l2_zeek, mitigate, policy, report
+from agent import dynamic_eval, evidence, l1_router, l2_rita, l2_zeek, l3_ti, mitigate, policy, report
 from agent.config import ConfigError, Context, Paths, load_context
 from agent.findings import ACCESS_LOST_RULE, access_lost_violation, fingerprint, reconcile
 from agent.publish import MAIN, Publisher, PublishError, should_publish, state_digest
@@ -25,8 +25,7 @@ EXIT_USAGE = 2
 EXIT_BUSY = 3
 MAX_NOTE = 500
 TEST_BRANCH = re.compile(r"^test/[a-z0-9][a-z0-9-]*$")
-LAYER_PENDING = {"l2": "wykrywanie statystyczne (RITA) dochodzi w iteracji 5",
-                 "l3": "warstwa L3 dochodzi w iteracji 5"}
+LAYER_UNAVAILABLE = "brak danych L2"
 SAMPLES_FILE = "l2-samples.json"
 
 
@@ -64,16 +63,29 @@ def _read_samples(path: Path) -> list[dict]:
         return []
 
 
-def _l2_layer(zeek: l2_zeek.ZeekData | None, reason: str | None, notes: list[str]) -> dict:
-    """D4: bez RITA warstwa L2 jest co najwyżej degraded, więc pokrycie zostaje partial."""
+def _l2_layer(zeek: l2_zeek.ZeekData | None, reason: str | None, rita: l2_rita.RitaData | None,
+              notes: list[str]) -> dict:
+    """L2 ok tylko z czytelnym Zeekiem i świeżym importem RITA (≤ 2 h); inaczej degraded."""
     if zeek is None:
-        return {"required": True, "status": "unavailable", "note": _note([reason or "brak danych L2"])}
-    return {"required": True, "status": "degraded", "sources": ["zeek"],
-            "window": {"from": dynamic_eval.iso(zeek.since), "to": dynamic_eval.iso(zeek.until)},
-            "note": _note([LAYER_PENDING["l2"], *notes])}
+        return {"required": True, "status": "unavailable", "note": _note([reason or LAYER_UNAVAILABLE, *notes])}
+    layer = {"required": True, "status": "degraded" if notes or rita is None else "ok",
+             "sources": ["zeek", "rita"] if rita is not None else ["zeek"],
+             "window": {"from": dynamic_eval.iso(zeek.since), "to": dynamic_eval.iso(zeek.until)}}
+    if notes:
+        layer["note"] = _note(notes)
+    return layer
 
 
-def _collection(l1: l1_router.L1Result, notes: list[str], l2: dict) -> dict:
+def _l3_layer(ti: l3_ti.TiResult) -> dict:
+    layer = {"required": False, "status": ti.status}
+    if ti.status != "unavailable":
+        layer["sources"] = [l3_ti.PROVIDER]
+    if ti.note:
+        layer["note"] = _note([ti.note])
+    return layer
+
+
+def _collection(l1: l1_router.L1Result, notes: list[str], l2: dict, l3: dict) -> dict:
     if l1.state is None:
         status = "unavailable"
     elif l1.failed_menus or notes:
@@ -86,7 +98,7 @@ def _collection(l1: l1_router.L1Result, notes: list[str], l2: dict) -> dict:
     return {
         "l1": layer,
         "l2": l2,
-        "l3": {"required": False, "status": "unavailable", "note": LAYER_PENDING["l3"]},
+        "l3": l3,
     }
 
 
@@ -107,7 +119,8 @@ def _publish(publisher: Publisher, state_path: Path, state_doc: dict, runtime_do
 
 def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.connect_monitor,
               publisher: Publisher | None = None, sync_error: str | None = None,
-              mode: str = mitigate.DRY_RUN, remediate_connector=l1_router.connect_remediate) -> int:
+              mode: str = mitigate.DRY_RUN, remediate_connector=l1_router.connect_remediate,
+              rita=None, ti=None) -> int:
     """Bez publishera to --dry-run: tylko zapis lokalny, własny łańcuch what-if."""
     started = clock()
     run_id = report.new_ulid(started)
@@ -184,8 +197,31 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         except l2_zeek.ZeekError as exc:
             l2_reason = "logi Zeeka nieczytelne"
             add_error("collect-l2", "l2.read-failed", str(exc))
+    # RITA: tanie zapytanie o ostatni import, beacony tylko po nowym (D2).
+    rita_data = None
+    rita_reason = l2_reason
+    rita_cache = out_dir / l2_rita.CACHE_FILE
+    if ctx.wan_address is not None:
+        try:
+            rita_data = l2_rita.collect((rita or l2_rita.connect)(ctx), ctx.wan_address, rita_cache)
+            if rita_data is None:
+                rita_reason = "RITA nie ma jeszcze zakończonego importu"
+                l2_notes.append(rita_reason)
+            elif now - rita_data.imported.ended_at > l2_rita.MAX_IMPORT_AGE_S:
+                l2_notes.append("ostatni import RITA starszy niż 2 h")
+        except l2_rita.RitaError as exc:
+            rita_reason = "wyniki RITA niedostępne"
+            l2_notes.append(rita_reason)
+            add_error("collect-l2", "l2.rita-failed", str(exc))
     dynamic = dynamic_eval.evaluate(dynamic_rules, zeek, ring if l1.samples else None,
-                                    ctx.dynamic_baseline, l2_reason)
+                                    ctx.dynamic_baseline, l2_reason, rita_data, rita_reason)
+    # L3: reputacja celów findingów dynamicznych, tylko jako potwierdzenie (D4).
+    targets, ti_rules = dynamic_eval.ti_targets(dynamic.violations, dynamic_rules)
+    ti_result = l3_ti.corroborate(targets, lambda: (ti or l3_ti.connect)(ctx), out_dir / l3_ti.CACHE_FILE,
+                                  now, report.write_atomic)
+    dynamic_eval.corroborate(dynamic.violations, ti_result.verdicts, ti_rules)
+    if ti_result.status != "ok":
+        add_error("collect-l3", "l3.lookup-failed", ti_result.note or "TI niedostępne")
     result.violations += dynamic.violations
     result.evaluated_rules |= dynamic.evaluated_rules
     result.known_rules |= {r["id"] for r in dynamic_rules}
@@ -215,7 +251,7 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         holds.append("otwarty wskaźnik kompromitacji")
     hold = f"{', '.join(holds)}: zmiany na routerze wstrzymane" if holds else None
     actions = mitigate.plan_actions(reconciled.findings, mode, hold)
-    collection = _collection(l1, notes, _l2_layer(zeek, l2_reason, l2_notes))
+    collection = _collection(l1, notes, _l2_layer(zeek, l2_reason, rita_data, l2_notes), _l3_layer(ti_result))
     coverage = report.derive_coverage(collection)
 
     def assemble():
@@ -292,6 +328,8 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         report.write_atomic(reports_dir / moment / name, report_bytes)
     report.write_atomic(state_path, report.to_bytes(state_doc))
     report.write_atomic(samples_path, json.dumps(ring).encode("utf-8"))
+    if rita_data is not None and rita_data.fresh_query:
+        l2_rita.save(rita_data, ctx.wan_address, rita_cache, report.write_atomic)
     runtime_doc = {"local_digest": ctx.local_digest, "error_kinds": error_kinds,
                    "published": runtime.get("published"), "remediation_attempted": sorted(attempted),
                    "publish_error": None if sync_error else runtime.get("publish_error")}
@@ -325,7 +363,9 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None, remediate_connector=None) -> int:
+def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None, remediate_connector=None,
+         rita=None, ti=None) -> int:
+    """rita, ti: fabryki klientów ClickHouse i TI (atrapy w testach)."""
     parser = _parser()
     args = parser.parse_args(argv)
     if not args.once:
@@ -352,7 +392,7 @@ def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None, 
             if args.dry_run:
                 out_dir = paths.data_dir / "dry-run" / args.router
                 out_dir.mkdir(parents=True, exist_ok=True)
-                return run_cycle(ctx, out_dir, clock, connect)
+                return run_cycle(ctx, out_dir, clock, connect, rita=rita, ti=ti)
 
             branch = args.publish_branch or MAIN
             out_dir = paths.data_dir / "publish" / branch / args.router
@@ -367,7 +407,7 @@ def main(argv=None, paths: Paths | None = None, clock=_utc_now, connector=None, 
                 sync_error = str(exc)
             return run_cycle(ctx, out_dir, clock, connect, Publisher(ctx, branch, out_dir), sync_error,
                              mitigate.NO_REMEDIATE if args.no_remediate else mitigate.FULL,
-                             remediate_connector or l1_router.connect_remediate)
+                             remediate_connector or l1_router.connect_remediate, rita=rita, ti=ti)
     except (ConfigError, PublishError) as exc:
         print(f"[KONFIGURACJA] {exc}", file=sys.stderr)
         return EXIT_FAILED

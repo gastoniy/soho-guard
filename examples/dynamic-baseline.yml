@@ -19,11 +19,13 @@ router_egress:
     - { desc: "NTP", host: "pool.ntp.org", proto: udp, port: 123 }
 router_traffic: { expected_protocols: [tcp, udp, icmp], max_distinct_dst_5min: 400 }
 
-# rita.beacon (iteracja 5): cel po nazwie i proto/port; "*" = dowolny cel na tym proto/porcie.
+# rita.beacon: cel i proto/port. dst: "*" = dowolny cel na tym proto/porcie; adres lub CIDR;
+# nazwa (także poddomeny) z FQDN RITA albo odpowiedzi DNS w dns.log z ostatnich 60 min.
 beaconing:
   allowed_periodic:
-    - { src: router, dst: "*",          proto: udp, port: 123, desc: "NTP z puli" }
-    - { src: router, dst: "github.com", proto: tcp, port: 22,  desc: "publikacja stanu (heartbeat)" }
+    - { src: router, dst: "*",               proto: udp, port: 123, desc: "NTP z puli" }
+    - { src: router, dst: "github.com",      proto: tcp, port: 22,  desc: "publikacja stanu (heartbeat)" }
+    - { src: router, dst: "140.82.112.0/20", proto: tcp, port: 22,  desc: "GitHub git (gdy nazwy brak w dns.log)" }
 
 # policy.dynamic.rogue-resolver i policy.dynamic.dga.
 dns:

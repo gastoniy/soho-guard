@@ -6,6 +6,7 @@ raportów nowy/rozwiązany.
 """
 from __future__ import annotations
 
+import ipaddress
 import math
 from collections import Counter
 from dataclasses import dataclass, field
@@ -21,8 +22,11 @@ SAMPLE_MARGIN_S = 2
 ESTABLISHED = {"SF", "S1", "S2", "S3", "RSTO", "RSTR"}
 CONN_PATH = "/zeek/conn"
 DNS_PATH = "/zeek/dns"
+RITA_PATH = "/rita/beacon"
+# Cele, dla których TI ma sens: zewnętrzny koniec kanału, nie resolver użyty przez DGA.
+TI_DETECTORS = {"zeek.conn", "rita.beacon", "dns.resolver"}
 CONNECTION_QUERY = "/ip/firewall/connection"
-SUPPORTED = {"zeek.conn", "dns.resolver", "dns.dga"}
+SUPPORTED = {"zeek.conn", "dns.resolver", "dns.dga", "rita.beacon"}
 MAX_DETAIL = 50
 
 
@@ -160,15 +164,104 @@ def dga(rule: dict, data: ZeekData, suffixes: list[str]) -> list[Violation]:
     return found
 
 
+def ports(row: dict) -> list[tuple[str, int | None]]:
+    """port_proto_service RITA: "123:udp:ntp", "22:tcp:" → (proto, port)."""
+    found = []
+    for item in row.get("port_proto_service") or []:
+        port, _, rest = str(item).partition(":")
+        proto = rest.split(":", 1)[0]
+        try:
+            pair = (proto, int(port))
+        except ValueError:
+            pair = (proto, None)
+        if proto and pair not in found:
+            found.append(pair)
+    return found
+
+
+def _dst_matches(entry_dst: str, ip: str | None, names: set[str]) -> bool:
+    """dst: "*", adres lub CIDR, albo nazwa (także poddomena) z FQDN RITA lub odpowiedzi DNS."""
+    entry_dst = str(entry_dst).strip().lower().rstrip(".")
+    if entry_dst == "*":
+        return True
+    try:
+        network = ipaddress.ip_network(entry_dst, strict=False)
+    except ValueError:
+        return any(n == entry_dst or n.endswith("." + entry_dst) for n in names)
+    try:
+        return ip is not None and ipaddress.ip_address(ip) in network
+    except ValueError:
+        return False
+
+
+def allowed_periodic(row: dict, entries: list[dict], names: set[str]) -> bool:
+    """Każda para proto/port beaconu musi mieć wpis z pasującym celem."""
+    pairs = ports(row)
+    if not pairs:
+        return False
+    return all(any(str(e.get("proto")) == proto and e.get("port") == port and _dst_matches(e.get("dst"), row.get("dst"), names)
+                   for e in entries) for proto, port in pairs)
+
+
+def beacon(rule: dict, rita, entries: list[dict], zeek_names: dict[str, set[str]]) -> list[Violation]:
+    found = []
+    limit = float(rule["assert"]["score_max"])
+    window = {"from": iso(rita.imported.since), "to": iso(rita.imported.until)}
+    for row in rita.rows:
+        score = float(row.get("beacon_score") or 0)
+        if score <= limit:
+            continue
+        fqdn = (row.get("fqdn") or "").rstrip(".").lower()
+        destination = row.get("dst") if row.get("dst") and row.get("dst") != "0.0.0.0" else \
+            next(iter(row.get("server_ips") or []), None)
+        names = set(zeek_names.get(destination or "", set())) | ({fqdn} if fqdn else set())
+        if allowed_periodic(row, entries, names) or destination is None:
+            continue
+        pairs = ports(row)
+        proto, port = pairs[0] if pairs else ("tcp", None)
+        key = fqdn if fqdn and row.get("beacon_type") != "ip" else destination
+        evidence = {"l2_observation": {
+            "destination": destination, "dport": port, "proto": proto if proto in ("tcp", "udp", "icmp") else "tcp",
+            "flow_count": max(int(row.get("count") or 1), 1), "bytes_total": int(row.get("total_bytes") or 0),
+            "window": window, "detector": rule["detector"], "score": round(min(max(score, 0.0), 1.0), 3)}}
+        trust = {"observed_by": ["L2"], "corroborated_by": [], "contradicted_by": [], "divergence": False}
+        detail = {"import_id": row.get("import_id") or rita.imported.import_id, "beacon_type": row.get("beacon_type"), "fqdn": fqdn or None,
+                  "port_proto_service": row.get("port_proto_service"), "score": score,
+                  "names": sorted(names)[:MAX_DETAIL]}
+        found.append(_violation(rule, RITA_PATH, key, evidence, trust, detail))
+    return sorted(found, key=lambda v: v.object_key)
+
+
+def corroborate(violations: list[Violation], verdicts: dict[str, dict], rule_ids: set[str]) -> None:
+    """L3 potwierdza finding: werdykt w dowodzie, malicious/suspicious w corroborated_by."""
+    for v in violations:
+        if v.evidence is None or v.rule not in rule_ids:
+            continue
+        found = verdicts.get(v.evidence["l2_observation"]["destination"])
+        if not found:
+            continue
+        v.evidence["l3_corroboration"] = dict(found)
+        if found["verdict"] in ("malicious", "suspicious") and "L3" not in v.trust["corroborated_by"]:
+            v.trust["corroborated_by"].append("L3")
+
+
+def ti_targets(violations: list[Violation], rules: list[dict]) -> tuple[set[str], set[str]]:
+    """(adresy do sprawdzenia, reguły, których cele sprawdza TI)."""
+    ids = {r["id"] for r in rules if r.get("detector") in TI_DETECTORS}
+    targets = {v.evidence["l2_observation"]["destination"] for v in violations
+               if v.evidence is not None and v.rule in ids}
+    return targets, ids
+
+
 def _suffixes(dynamic_baseline: dict) -> list[str]:
     values = ((dynamic_baseline.get("dns") or {}).get("allowed_suffixes")) or []
     return [str(v).strip(".").lower() for v in values if str(v).strip(".")]
 
 
 def evaluate(rules: list[dict], data: ZeekData | None, samples: list[dict] | None,
-             dynamic_baseline: dict, l2_reason: str | None) -> DynamicResult:
-    """data=None: logów brak, żadna reguła L2 nie jest oceniona. samples=None: brak próbek
-    w tym cyklu, więc nieoceniona jest tylko rozbieżność."""
+             dynamic_baseline: dict, l2_reason: str | None, rita=None, rita_reason: str | None = None) -> DynamicResult:
+    """data=None: logów brak, reguły Zeeka nie są ocenione. samples=None: brak próbek
+    w tym cyklu, więc nieoceniona jest tylko rozbieżność. rita=None: beacon nieoceniony."""
     result = DynamicResult()
     dns_cfg = dynamic_baseline.get("dns") if isinstance(dynamic_baseline.get("dns"), dict) else {}
 
@@ -178,7 +271,15 @@ def evaluate(rules: list[dict], data: ZeekData | None, samples: list[dict] | Non
     for rule in rules:
         detector = rule.get("detector")
         if detector not in SUPPORTED:
-            continue                      # RITA i TI: kolejne iteracje
+            continue                      # ti: TI tylko potwierdza findingi (D4)
+        if detector == "rita.beacon":
+            if rita is None:
+                skip(rule, rita_reason or "brak wyników RITA")
+                continue
+            entries = ((dynamic_baseline.get("beaconing") or {}).get("allowed_periodic")) or []
+            result.evaluated_rules.add(rule["id"])
+            result.violations += beacon(rule, rita, entries, data.names if data else {})
+            continue
         if data is None:
             skip(rule, l2_reason or "brak danych L2")
             continue

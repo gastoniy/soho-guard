@@ -12,6 +12,8 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 - `collection.l2`: `ok` (źródła `zeek`, `rita`), gdy Zeek jest czytelny, a ostatni import RITA ma najwyżej 2 h; inaczej `degraded` z powodem. Czysty router może mieć `no-violations` i pokrycie `full`.
 - `collection.l3`: status OTX zamiast stałego `unavailable`.
 - `policy_lint.py --dynamic` sprawdza postać `allowed_periodic.dst`.
+### Poprawione
+- `soho-rita-import.sh`: RITA v5.1.2 rozpoznaje zaimportowane pliki po ścieżce w kontenerze (`/tmp/zeek_logs/<plik>`, bez daty), więc plik godzinowy o nazwie znanej z innego dnia był pomijany bez błędu i godzina danych przepadała. Archiwa z wczoraj i dziś trafiają teraz do katalogu przejściowego pod ścieżką z datą (`RITA_PATH_MODE=dir`: podkatalog `<data>/`, `name`: data w nazwie pliku), jednym wywołaniem importu. Skrypt instaluje się ręcznie z wdrożonego wydania; po instalacji jednorazowo `soho-rita-import.sh --rebuild` (zbiór `lab` budowany od nowa, bez duplikatów godzin).
 
 ## [v0.5.0-lab] — 2026-11-08
 ### Dodane

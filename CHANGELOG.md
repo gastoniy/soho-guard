@@ -3,6 +3,8 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+
+## [v0.6.0-lab] — 2026-11-09
 ### Dodane
 - Agent, iteracja 5: `policy.dynamic.beacon` z wyników RITA (ClickHouse `lab.threat_mixtape`): najnowsza ocena każdej pary z `last_seen` w oknie danych ostatniego importu, a w obrębie jednej analizy najwyższy wynik (RITA zapisuje dla pary kilka wierszy naraz, np. modyfikatory z wynikiem 0 i wiersz `sni`), tak jak `rita view` (import zapisuje tylko pary przeliczone w nim, więc sam ostatni import bywa pusty). Co cykl zapytanie o ostatni import, beacony tylko po nowym; wynik lokalnie w `rita.json`, więc finding trwa do kolejnego importu. Wynik `beacon_score` > `score_max` poza `beaconing.allowed_periodic` daje finding (alert).
 - `allowed_periodic`: `dst` jako `*`, adres, CIDR albo nazwa; nazwa z FQDN RITA lub z odpowiedzi DNS w `dns.log` z ostatnich 60 min (także poddomeny). Każda para proto/port beaconu musi mieć wpis.

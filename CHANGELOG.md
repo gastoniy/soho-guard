@@ -3,6 +3,8 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+
+## [v0.7.0-lab] — 2026-11-11
 ### Dodane
 - Agent, iteracja 6: samokontrola czujników L2 (`agent/selfcheck.py`). Wynik obniża pokrycie i nigdy nie tworzy ani nie rozwiązuje findingu:
   - `current/conn.log` bez zapisu ponad 15 min (`selfcheck.zeek-stale`) albo brak ruchu routera w oknie 60 min (`selfcheck.no-router-traffic`): reguły Zeeka nieocenione, L2 `degraded`;

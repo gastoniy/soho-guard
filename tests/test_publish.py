@@ -123,6 +123,21 @@ def test_heartbeat_commits_state_after_interval(remote):
     assert state["last_run"]["run_seq"] == 3
 
 
+def test_unreachable_router_message_shows_both_postures(remote, capsys):
+    """K1: bez danych z routera raport nie ma findingów, a stan pamięta otwarte naruszenie."""
+    assert remote.run(router(**SOCKS_ON)) == 0
+    remote.later()
+
+    def failing(ctx, password):
+        raise TimeoutError("timed out")
+    capsys.readouterr()
+    assert remote.run(connector=failing) == 0
+    subject = subprocess.run(["git", "-C", str(remote.bare), "log", "-1", "--format=%s", "main"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+    assert subject.startswith("agent(r2): raport inconclusive, stan policy-violation, ")
+    assert "posture=policy-violation (raport: inconclusive) " in capsys.readouterr().out
+
+
 def test_violation_publishes_at_once(remote):
     assert remote.run() == 0
     remote.later()

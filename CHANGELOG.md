@@ -5,7 +5,7 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 ## [Unreleased]
 ### Zmienione
 - Komunikat commita agenta i linia podsumowania pokazują `posture` raportu i stanu, gdy się różnią (naprawa potwierdzona w cyklu, brak danych z routera): `agent(r2): raport policy-violation, stan no-violations, …`, na konsoli `posture=<stan> (raport: <raport>)`. Bez różnicy format bez zmian.
-- `check-c1-prep.sh` jako kontrola węzła po C1: porównanie zainstalowanych jednostek (`agent@`, `rita`, `zeek`), skryptów (`soho-deploy.sh`, `soho-rita-import.sh`) i `tmpfiles.d` z wdrożonym wydaniem; timery `agent@r1`, `agent@r2` włączone, `ExecStart` z `--trigger timer`; `MODE=main` (bez drop-inu, publikacja na `main`) lub `MODE=test` (drop-in `test-branch.conf`, `--publish-branch test/`). Usunięta kontrola „timery wyłączone (przed C1)”.
+- `check-c1-prep.sh` jako kontrola węzła po C1: porównanie zainstalowanych jednostek (`agent@`, `rita`, `zeek`), skryptów (`soho-deploy.sh`, `soho-rita-import.sh`) i `tmpfiles.d` z wdrożonym wydaniem; timery `agent@r1`, `agent@r2` włączone, `ExecStart` z `--trigger timer`; `MODE=main` (bez drop-inu, publikacja na `main`) lub `MODE=test` (drop-in `test-branch.conf`, `--publish-branch test/`). Usunięta kontrola „timery wyłączone (przed C1)”. Świeżość `capture_loss` liczona także z archiwum ostatniej godziny (po rotacji `current/capture_loss.log` nie istnieje do następnego pomiaru).
 
 ## [v0.7.0-lab] — 2026-11-11
 ### Dodane

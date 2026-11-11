@@ -4,7 +4,15 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 
 ## [Unreleased]
 ### Dodane
+- Agent, iteracja 6: samokontrola czujników L2 (`agent/selfcheck.py`). Wynik obniża pokrycie i nigdy nie tworzy ani nie rozwiązuje findingu:
+  - `current/conn.log` bez zapisu ponad 15 min (`selfcheck.zeek-stale`) albo brak ruchu routera w oknie 60 min (`selfcheck.no-router-traffic`): reguły Zeeka nieocenione, L2 `degraded`;
+  - utrata pakietów na mirrorze z `capture_loss.log` powyżej 1% albo brak pomiaru z ostatnich 30 min (`selfcheck.capture-loss`): L2 `degraded`; wpis z mniej niż 500 potwierdzeniami TCP tylko jako uwaga;
+  - `wan_address` nieobecny w `/ip/address` routera albo klient DHCP na interfejsie WAN (`selfcheck.wan-mismatch`): atrybucja niepewna, cała L2 (Zeek i RITA) `unavailable`.
+- Retencja danych lokalnych: `lab/monitor-node/tmpfiles.d/soho-guard.conf` (dowody 30 dni, `orphaned/` 7 dni; `systemd-tmpfiles`).
+- Wzorzec `lab/monitor-node/systemd/agent@.service.d/test-branch.conf`: timery w trybie pełnym na `test/timers` przed przejściem na `main`.
 - Zeek w labie: `lab/monitor-node/zeek/local.zeek.fragment` (`@load misc/capture-loss`) dla samokontroli utraty pakietów; `check-c1-prep.sh` sprawdza wpis i świeżość `capture_loss.log`.
+### Zmienione
+- `collection.l2.note` łączy uwagi obniżające status z informacyjnymi (te drugie nie zmieniają `ok`).
 
 ## [v0.6.0-lab] — 2026-11-09
 ### Dodane

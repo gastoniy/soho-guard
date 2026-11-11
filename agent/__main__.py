@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent import dynamic_eval, evidence, l1_router, l2_rita, l2_zeek, l3_ti, mitigate, policy, report
+from agent import dynamic_eval, evidence, l1_router, l2_rita, l2_zeek, l3_ti, mitigate, policy, report, selfcheck
 from agent.config import ConfigError, Context, Paths, load_context
 from agent.findings import ACCESS_LOST_RULE, access_lost_violation, fingerprint, reconcile
 from agent.publish import MAIN, Publisher, PublishError, should_publish, state_digest
@@ -64,15 +64,17 @@ def _read_samples(path: Path) -> list[dict]:
 
 
 def _l2_layer(zeek: l2_zeek.ZeekData | None, reason: str | None, rita: l2_rita.RitaData | None,
-              notes: list[str]) -> dict:
-    """L2 ok tylko z czytelnym Zeekiem i świeżym importem RITA (≤ 2 h); inaczej degraded."""
+              notes: list[str], info: list[str] | None = None) -> dict:
+    """L2 ok tylko z czytelnym Zeekiem, świeżym importem RITA (≤ 2 h) i zaliczoną
+    samokontrolą; notes obniżają status, info tylko go opisują."""
+    info = info or []
     if zeek is None:
         return {"required": True, "status": "unavailable", "note": _note([reason or LAYER_UNAVAILABLE, *notes])}
     layer = {"required": True, "status": "degraded" if notes or rita is None else "ok",
              "sources": ["zeek", "rita"] if rita is not None else ["zeek"],
              "window": {"from": dynamic_eval.iso(zeek.since), "to": dynamic_eval.iso(zeek.until)}}
-    if notes:
-        layer["note"] = _note(notes)
+    if notes or info:
+        layer["note"] = _note([*notes, *info])
     return layer
 
 
@@ -197,11 +199,20 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         except l2_zeek.ZeekError as exc:
             l2_reason = "logi Zeeka nieczytelne"
             add_error("collect-l2", "l2.read-failed", str(exc))
+    # Samokontrola: niezaliczona obniża pokrycie i blokuje ocenę, nigdy nie tworzy findingu.
+    check = selfcheck.check(ctx.paths.zeek_dir, ctx.wan_address, zeek, l1.state, now)
+    for code, message in check.errors:
+        add_error("collect-l2", code, message)
+    l2_notes += check.degraded
+    zeek_eval = None if check.zeek_blocked else zeek
+    if check.attribution:
+        zeek = zeek_eval = None
+        l2_reason = f"atrybucja niepewna: {check.attribution}"
     # RITA: tanie zapytanie o ostatni import, beacony tylko po nowym (D2).
     rita_data = None
     rita_reason = l2_reason
     rita_cache = out_dir / l2_rita.CACHE_FILE
-    if ctx.wan_address is not None:
+    if ctx.wan_address is not None and not check.attribution:
         try:
             rita_data = l2_rita.collect((rita or l2_rita.connect)(ctx), ctx.wan_address, rita_cache)
             if rita_data is None:
@@ -213,8 +224,8 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
             rita_reason = "wyniki RITA niedostępne"
             l2_notes.append(rita_reason)
             add_error("collect-l2", "l2.rita-failed", str(exc))
-    dynamic = dynamic_eval.evaluate(dynamic_rules, zeek, ring if l1.samples else None,
-                                    ctx.dynamic_baseline, l2_reason, rita_data, rita_reason)
+    dynamic = dynamic_eval.evaluate(dynamic_rules, zeek_eval, ring if l1.samples else None,
+                                    ctx.dynamic_baseline, check.zeek_blocked or l2_reason, rita_data, rita_reason)
     # L3: reputacja celów findingów dynamicznych, tylko jako potwierdzenie (D4).
     targets, ti_rules = dynamic_eval.ti_targets(dynamic.violations, dynamic_rules)
     ti_result = l3_ti.corroborate(targets, lambda: (ti or l3_ti.connect)(ctx), out_dir / l3_ti.CACHE_FILE,
@@ -251,7 +262,8 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
         holds.append("otwarty wskaźnik kompromitacji")
     hold = f"{', '.join(holds)}: zmiany na routerze wstrzymane" if holds else None
     actions = mitigate.plan_actions(reconciled.findings, mode, hold)
-    collection = _collection(l1, notes, _l2_layer(zeek, l2_reason, rita_data, l2_notes), _l3_layer(ti_result))
+    collection = _collection(l1, notes, _l2_layer(zeek, l2_reason, rita_data, l2_notes, check.info),
+                             _l3_layer(ti_result))
     coverage = report.derive_coverage(collection)
 
     def assemble():

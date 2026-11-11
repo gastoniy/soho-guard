@@ -91,3 +91,30 @@ def test_timer_test_branch_dropin():
     assert "--trigger timer" in lines[1] and "--no-remediate" not in lines[1] and "--dry-run" not in lines[1]
     unit = (LAB / "systemd" / "agent@.service").read_text(encoding="utf-8")
     assert lines[1].split("ExecStart=", 1)[1].split(" --publish-branch")[0] in unit
+
+
+# --- check-c1-prep.sh: kontrola węzła po C1 (J1–J3) ---
+CHECK = DEPLOY.parent / "check-c1-prep.sh"
+
+
+def test_check_script_syntax():
+    subprocess.run(["bash", "-n", str(CHECK)], check=True)
+
+
+def test_check_compares_every_installed_node_file():
+    text = CHECK.read_text(encoding="utf-8")
+    node = DEPLOY.parents[1]
+    files = [p for p in (node / "systemd").iterdir() if p.suffix in (".service", ".timer")]
+    files += [node / "scripts" / "soho-deploy.sh", node / "scripts" / "soho-rita-import.sh",
+              node / "tmpfiles.d" / "soho-guard.conf"]
+    for path in files:
+        # Pierwsza linia pliku podaje miejsce instalacji; skrypt porównuje dokładnie tę parę.
+        target = path.read_text(encoding="utf-8").splitlines()[1 if path.suffix == ".sh" else 0].split()[1]
+        assert f'"{path.parent.name}/{path.name} {target}"' in text, path.name
+
+
+def test_check_has_no_pre_c1_timer_rule_and_both_modes():
+    text = CHECK.read_text(encoding="utf-8")
+    assert "wyłączone (przed C1)" not in text
+    assert 'MODE="${MODE:-main}"' in text and 'if [ "$MODE" = test ]' in text
+    assert "test-branch.conf" in text and "--trigger timer" in text

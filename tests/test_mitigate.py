@@ -231,6 +231,30 @@ def test_listener_row_with_rule_name_is_not_selected(full):
     assert sim.writes == [(("ip", "service"), {"disabled": "yes", ".id": "*3"})]
 
 
+def subject(remote, branch="main"):
+    return subprocess.run(["git", "-C", str(remote.bare), "log", "-1", "--format=%s", branch],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_repair_shows_report_and_state_posture(full, capsys):
+    """K1: naprawa potwierdzona w cyklu — raport policy-violation, stan bez naruszenia."""
+    sim = Sim(router(**SOCKS_ON))
+    assert full.full(sim) == 0
+    state = state_of(full)["posture"]
+    assert state != "policy-violation"
+    assert subject(full).startswith(f"agent(r2): raport policy-violation, stan {state}, ")
+    assert f"posture={state} (raport: policy-violation) " in capsys.readouterr().out
+
+
+def test_same_posture_keeps_short_message(full, capsys):
+    sim = Sim(router())
+    assert full.full(sim) == 0
+    state = state_of(full)["posture"]
+    assert subject(full).startswith(f"agent(r2): {state}, ")
+    out = capsys.readouterr().out
+    assert f"posture={state} coverage=" in out and "(raport:" not in out
+
+
 def test_counter_is_zero_outside_full_mode(full, capsys):
     sim = Sim(router(**SOCKS_ON))
     assert full.full(sim, "--no-remediate") == 0

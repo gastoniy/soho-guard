@@ -47,6 +47,16 @@ def _first(state: dict | None, resource: str, attr: str) -> str | None:
     return str(rows[0][attr]) if rows and rows[0].get(attr) is not None else None
 
 
+def _postures(posture: str, report_doc: dict | None) -> tuple[str, str]:
+    """Posture do komunikatu commita i podsumowania (K1, K2). Stan opisuje sytuację po
+    akcjach, raport tego cyklu jego findingi: przy różnicy (naprawa potwierdzona w cyklu,
+    brak danych z routera) pokazujemy oba, inaczej jak dotąd sam stan."""
+    reported = report_doc["verdict"]["posture"] if report_doc else posture
+    if reported == posture:
+        return posture, posture
+    return f"raport {reported}, stan {posture}", f"{posture} (raport: {reported})"
+
+
 def _note(items: list[str]) -> str:
     return "; ".join(items)[:MAX_NOTE]
 
@@ -347,15 +357,16 @@ def run_cycle(ctx: Context, out_dir: Path, clock=_utc_now, connector=l1_router.c
                    "publish_error": None if sync_error else runtime.get("publish_error")}
     report.write_atomic(runtime_path, report.to_bytes(runtime_doc))
 
+    in_message, in_summary = _postures(posture, report_doc)
     published = "-"
     if publisher and sync_error:
         published = "błąd"
     elif publisher:
-        message = f"agent({ctx.router_id}): {posture}, {coverage}, przebieg {run_id}"
+        message = f"agent({ctx.router_id}): {in_message}, {coverage}, przebieg {run_id}"
         published = _publish(publisher, state_path, state_doc, runtime_doc, message)
         report.write_atomic(runtime_path, report.to_bytes(runtime_doc))
 
-    print(f"{ctx.router_id}: posture={posture} coverage={coverage} otwarte={len(reconciled.open_findings)} "
+    print(f"{ctx.router_id}: posture={in_summary} coverage={coverage} otwarte={len(reconciled.open_findings)} "
           f"nowe={report_doc['verdict']['findings_new'] if report_doc else 0} "
           f"naprawione={repaired} rozwiązane={len(reconciled.resolved)} raport={'tak' if report_doc else 'nie'} "
           f"publikacja={published} błędy={','.join(error_kinds) or '-'}")

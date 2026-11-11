@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# check-c1-prep.sh — kontrola przygotowania węzła monitorującego (tylko odczyt)
-# Użycie: sudo LOGIN=<login-github> bash check-c1-prep.sh
+# check-c1-prep.sh — kontrola węzła monitorującego (tylko odczyt): przygotowanie i praca agenta po C1
+# Użycie: sudo LOGIN=<login-github> [MODE=main|test] bash check-c1-prep.sh
+#   MODE=main (domyślnie): timery publikują na main, bez drop-inu test-branch.conf
+#   MODE=test: timery na test/* przez drop-in (test RC, decyzja 2026-11-11)
 # Sieć: git push --dry-run przez R1 i R2, zapytanie OTX przez R1. Nie wypisuje sekretów.
 LOGIN="${LOGIN:?ustaw LOGIN=<login GitHub>, np. sudo LOGIN=jan bash check-c1-prep.sh}"
 SITE=/var/lib/soho-guard/site-lab
 ETC=/etc/soho-guard
+MODE="${MODE:-main}"
+case "$MODE" in main|test) ;; *) echo "MODE musi być main albo test"; exit 2;; esac
+NODE=/opt/soho-guard/app/lab/monitor-node
+DROPIN=/etc/systemd/system/agent@.service.d/test-branch.conf
 A="runuser -u soho-agent --"
 GH_FP="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
 pass=0; fail=0
@@ -76,8 +82,31 @@ chk "rita.timer enabled + active"              'systemctl is-enabled rita.timer 
 chk "rita.service: ostatni przebieg OK"        '[ "$(systemctl show -p Result --value rita.service)" = success ]'
 chk "zbiór RITA lab istnieje"                  'rita list 2>/dev/null | grep -qw lab'
 chk "soho-rita-import.sh zainstalowany"        '[ -x /usr/local/sbin/soho-rita-import.sh ]'
-chk "agent@.service/timer zainstalowane"       '[ -f /etc/systemd/system/agent@.service ] && [ -f /etc/systemd/system/agent@.timer ]'
-chk "agent timery wyłączone (przed C1)"        '! systemctl is-enabled agent@r1.timer && ! systemctl is-enabled agent@r2.timer'
+
+echo "== Jednostki i skrypty węzła zgodne z wdrożonym wydaniem (tryb $MODE)"
+# Zainstalowana kopia musi być identyczna z plikiem z /opt/soho-guard/app (v0.7.0: stara jednostka bez --trigger timer).
+for p in "systemd/agent@.service /etc/systemd/system/agent@.service" \
+         "systemd/agent@.timer /etc/systemd/system/agent@.timer" \
+         "systemd/rita.service /etc/systemd/system/rita.service" \
+         "systemd/rita.timer /etc/systemd/system/rita.timer" \
+         "systemd/zeek.service /etc/systemd/system/zeek.service" \
+         "scripts/soho-deploy.sh /usr/local/sbin/soho-deploy.sh" \
+         "scripts/soho-rita-import.sh /usr/local/sbin/soho-rita-import.sh" \
+         "tmpfiles.d/soho-guard.conf /etc/tmpfiles.d/soho-guard.conf"; do set -- $p
+  chk "$2 = wydanie"                           "cmp -s $NODE/$1 $2"
+done
+EXEC='systemctl show -p ExecStart --value agent@r1.service'
+for r in r1 r2; do
+  chk "agent@$r.timer enabled + active"        "systemctl is-enabled agent@$r.timer && systemctl is-active agent@$r.timer"
+done
+chk "ExecStart: --trigger timer, bez --dry-run/--no-remediate" "$EXEC | grep -q -- '--trigger timer' && ! $EXEC | grep -qE -- '--dry-run|--no-remediate'"
+if [ "$MODE" = test ]; then
+  chk "drop-in test-branch.conf = wydanie"     "cmp -s $NODE/systemd/agent@.service.d/test-branch.conf $DROPIN"
+  chk "ExecStart: --publish-branch test/"      "$EXEC | grep -q -- '--publish-branch test/'"
+else
+  chk "brak drop-inu test-branch.conf"         "[ ! -e $DROPIN ]"
+  chk "ExecStart: publikacja na main"          "! $EXEC | grep -q -- '--publish-branch'"
+fi
 
 echo "== L3, syslog, firewall"
 chk "OTX API klucz ważny (przez R1)"           "curl -sf --interface 10.100.1.10 -H \"X-OTX-API-KEY: \$(sed -n 's/^OTX_API_KEY=//p' $ETC/ti.env)\" https://otx.alienvault.com/api/v1/user/me"

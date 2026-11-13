@@ -16,5 +16,6 @@ expect:
   posture: policy-violation
   action: auto-remediate
   end_state: baseline
-  max_detection_time_s: 120
+  # Budżet POL/SITE: cykl 300 s + odczyt L1 + zapas (decyzja 2026-11-12).
+  max_detection_time_s: 420
 teardown: { reset: true }

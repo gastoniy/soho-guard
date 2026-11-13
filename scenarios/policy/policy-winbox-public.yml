@@ -1,0 +1,23 @@
+schema_version: "1.0.0"
+id: POL-006
+title: "Winbox bez ograniczenia adresu (reguła uniwersalna bez remediate)"
+class: policy
+attack:
+  attck: ["T1133"]
+  timeline_ref: "Winbox na WAN — Coinhive/Glupteba/Mēris (CVE-2018-14847)"
+target: { router_id: r2, profile: ros6 }
+apply:
+  playbook: playbooks/policy/winbox-public.yml
+expect:
+  detected: true
+  phase: static
+  rule: policy.mgmt.winbox.not-public
+  rule_source: universal
+  posture: policy-violation
+  # D-A: reguła bez bloku remediate -> agent planuje none/skipped;
+  # router pozostaje zmieniony do teardownu.
+  action: none
+  end_state: unchanged
+  # Budżet POL/SITE: cykl 300 s + odczyt L1 + zapas (decyzja 2026-11-12).
+  max_detection_time_s: 420
+teardown: { reset: true }

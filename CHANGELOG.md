@@ -3,6 +3,14 @@
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
 ## [Unreleased]
+### Dodane
+- Manifest POL-006 (`scenarios/policy/policy-winbox-public.yml`): Winbox bez ograniczenia adresu, reguła uniwersalna bez `remediate` — `action: none`, `end_state: unchanged` (D-A).
+
+### Zmienione
+- `manifest_lint.py`: klasa `policy` dopuszcza parę `action: none` + `end_state: unchanged` obok `auto-remediate` + `baseline`; pary krzyżowe są błędem. Schemat `scenario.schema.json` bez zmian.
+- Budżet MTTD scenariuszy POL/SITE: 420 s (cykl 300 s + odczyt L1 + zapas) — POL-003, SITE-007, POL-006.
+- SITE-007 = **nowy** sekret PPP poza inwentarzem (H6), playbook `playbooks/site/ppp-secret-add.yml`; zmiana samego hasła nie jest driftem (D6a) i nie ma scenariusza na labie.
+- `.gitignore`: `harness.yml` (lokalna konfiguracja harnessu) i jawnie `harness/results/`.
 
 ## [v0.7.1-lab] — 2026-11-11
 ### Zmienione

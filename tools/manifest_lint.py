@@ -35,8 +35,10 @@ _V = _validator()
 
 # Dozwolony kształt expect per klasa. None = pole musi być nieobecne.
 CLASS_RULES = {
-    "policy":  dict(detected=True,  rule_source="universal", action={"auto-remediate"},
-                    end_state="baseline", posture={"policy-violation", "compromise-suspected"},
+    # policy: action i end_state sprawdzane parami (POLICY_ACTION_END_STATE).
+    "policy":  dict(detected=True,  rule_source="universal", action={"auto-remediate", "none"},
+                    end_state={"baseline", "unchanged"},
+                    posture={"policy-violation", "compromise-suspected"},
                     phase={"static", "dynamic"}, generate=False),
     "site":    dict(detected=True,  rule_source="local", action={"pr-alert"},
                     end_state="unchanged", posture={"site-drift"},
@@ -50,6 +52,10 @@ CLASS_RULES = {
     "control": dict(detected=False, rule_source=None, action=None,
                     end_state=None, posture={"no-violations"}, phase=None, generate=True),
 }
+
+# D-A: reguła uniwersalna z remediate -> naprawa i powrót do baseline;
+# reguła uniwersalna bez remediate -> akcja none, router bez zmian.
+POLICY_ACTION_END_STATE = {"auto-remediate": "baseline", "none": "unchanged"}
 
 
 def _struct_errors(doc) -> list[str]:
@@ -86,6 +92,12 @@ def _consistency_errors(doc) -> list[str]:
     else:
         if exp.get("action") not in rules["action"]:
             out.append(f"class={cls}: action '{exp.get('action')}' spoza {sorted(rules['action'])}")
+
+    if cls == "policy":
+        act, es = exp.get("action"), exp.get("end_state")
+        want_es = POLICY_ACTION_END_STATE.get(act)
+        if want_es is not None and es in POLICY_ACTION_END_STATE.values() and es != want_es:
+            out.append(f"class=policy: action '{act}' wymaga end_state '{want_es}', jest '{es}'")
 
     if rules["phase"] is not None and exp.get("phase") not in rules["phase"]:
         out.append(f"class={cls}: phase '{exp.get('phase')}' spoza {sorted(rules['phase'])}")

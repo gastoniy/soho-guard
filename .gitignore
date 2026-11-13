@@ -5,11 +5,14 @@
 id_*
 vault*.yml
 *.rendered.rsc
+# harness: lokalna konfiguracja (ścieżki do sekretów, adresy labu)
+harness.yml
 build/
 # dane robocze
 *.pcap
 evidence/
 results/
+harness/results/
 # Python
 __pycache__/
 .pytest_cache/

@@ -33,7 +33,8 @@ def load_json(name): return json.loads((EX / name).read_text(encoding="utf-8"))
 
 # ---------------- manifest_lint: pozytywne ----------------
 @pytest.mark.parametrize("name", [
-    "policy-socks-enabled.yml", "site-ppp-secret.yml", "benign-firewall-comment.yml",
+    "policy-socks-enabled.yml", "policy-winbox-public.yml",
+    "site-ppp-secret.yml", "benign-firewall-comment.yml",
     "dynamic-c2-beacon.yml", "dynamic-c2-divergence.yml", "control-l2-attribution.yml",
 ])
 def test_examples_valid(name):
@@ -51,6 +52,23 @@ def test_policy_cannot_be_local(tmp_path):
 
 def test_policy_cannot_pr_alert(tmp_path):
     d = load_yaml("policy-socks-enabled.yml"); d["expect"]["action"] = "pr-alert"
+    assert any("action" in e for e in ml.validate(_write(tmp_path, d)))
+
+@pytest.mark.parametrize("name,action,end_state", [
+    ("policy-socks-enabled.yml", "auto-remediate", "unchanged"),
+    ("policy-winbox-public.yml", "none", "baseline"),
+])
+def test_policy_action_end_state_pair(tmp_path, name, action, end_state):
+    # D-A: auto-remediate <-> baseline, none <-> unchanged; krzyżowe pary odrzucone
+    d = load_yaml(name); d["expect"]["action"] = action; d["expect"]["end_state"] = end_state
+    assert any("wymaga end_state" in e for e in ml.validate(_write(tmp_path, d)))
+
+def test_policy_action_none_requires_end_state(tmp_path):
+    d = load_yaml("policy-winbox-public.yml"); del d["expect"]["end_state"]
+    assert any("end_state" in e for e in ml.validate(_write(tmp_path, d)))
+
+def test_policy_cannot_alert(tmp_path):
+    d = load_yaml("policy-winbox-public.yml"); d["expect"]["action"] = "alert"
     assert any("action" in e for e in ml.validate(_write(tmp_path, d)))
 
 def test_site_must_be_unchanged(tmp_path):
@@ -95,6 +113,28 @@ def test_oracle_dynamic_matches_adr005_report():
     # stan nieistotny dla detected=True; podajemy dowolny poprawny
     st = load_json("state-r2.json")
     assert oe.oracle_eval(m, rep, st) == []
+
+
+def _winbox_report(action_type="none", status="skipped"):
+    """Minimalny raport POL-006: finding winbox new, akcja none/skipped (mitigate._plan)."""
+    rep = copy.deepcopy(load_json("report-policy-violation.json"))
+    f = rep["findings"][0]
+    f["rule"] = "policy.mgmt.winbox.not-public"
+    f["evidence"] = {"type": "state", "path": "/ip/service",
+                     "expected": {"address": {"private": True}}, "observed": {"address": ""}}
+    a = rep["actions"][0]
+    a.update(type=action_type, status=status, verification=None,
+             reason="reguła uniwersalna bez remediate, naruszenie widoczne w raporcie")
+    return rep
+
+def test_oracle_policy_action_none_passes():
+    m = load_yaml("policy-winbox-public.yml")
+    assert oe.oracle_eval(m, _winbox_report(), load_json("state-r2.json")) == []
+
+def test_oracle_policy_action_none_rejects_remediation():
+    m = load_yaml("policy-winbox-public.yml")
+    errs = oe.oracle_eval(m, _winbox_report("auto-remediate", "succeeded"), load_json("state-r2.json"))
+    assert any("action.type" in e for e in errs)
 
 
 # ---------------- oracle: wykrywa niezgodności ----------------

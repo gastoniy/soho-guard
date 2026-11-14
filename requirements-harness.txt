@@ -1,0 +1,6 @@
+# Harness scenariuszy (Python 3.12, osobny venv), H1.
+# Kolekcja Ansible: playbooks/requirements.yml.
+ansible-core==2.21.6
+librouteros==4.2.2          # community.routeros (api, api_info, api_modify)
+pyyaml                      # manifesty, site.yml, harness.yml
+jsonschema[format-nongpl]>=4.18   # tools/manifest_lint.py przed przebiegiem

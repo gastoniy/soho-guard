@@ -1,0 +1,31 @@
+---
+# Odczyt menu RouterOS do pliku JSON (H5: wynik scenariusza własnym kanałem harnessu).
+# Wejście: read_path (np. "ip socks"), read_out (ścieżka pliku wynikowego na hoście).
+- name: Odczyt menu RouterOS
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/router.yml
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ router_host }}"
+      port: "{{ router_api_port }}"
+      username: "{{ routeros_user }}"
+      password: "{{ routeros_password }}"
+      tls: true
+      validate_certs: true
+      validate_cert_hostname: false
+      ca_path: "{{ router_ca_path }}"
+  tasks:
+    - name: Odczyt {{ read_path }}
+      community.routeros.api_info:
+        path: "{{ read_path }}"
+        hide_defaults: false
+      register: harness_read
+      no_log: "{{ harness_no_log }}"
+
+    - name: Zapis odczytu do JSON
+      ansible.builtin.copy:
+        content: "{{ harness_read.result | to_json }}"
+        dest: "{{ read_out }}"
+        mode: "0600"

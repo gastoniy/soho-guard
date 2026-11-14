@@ -4,6 +4,10 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 
 ## [Unreleased]
 ### Dodane
+- Harness, iteracja 1 (`harness/`, `playbooks/`): `python -m harness run <manifest> [--target R] [--repeat N] [--offset S] [--seed N]` dla scenariuszy wykrywanych z krokiem `apply`. Przebieg: warunki wstępne H8 ze stanu w site-lab (`invalid` przy niespełnieniu) → odczyt obiektu w baseline → apply w losowym momencie poza oknem `:X0…:X0+30 s` → `t0` = potwierdzenie zmiany odczytem `community.routeros.api_info` (api-ssl, CA) → czekanie na raport z regułą `new` (budżet MTTD + 120 s, `timeout`) → `oracle_eval` + MTTD/czas do powiadomienia/czas do naprawy (H11) + `end_state` własnym odczytem → `--tags revert` → wynik JSON w `harness/results/` (H7). Kody wyjścia 0/1/2/3.
+- Playbooki: `common/read.yml` (odczyt menu do JSON), `policy/socks-enabled.yml` (POL-003, apply + `revert`); hasło konta `ansible` wyłącznie z pliku Vault routera, zadania z połączeniem `no_log`.
+- `requirements-harness.txt` (`ansible-core==2.21.6`, `librouteros==4.2.2`, `pyyaml`, `jsonschema`), `playbooks/requirements.yml` (`community.routeros` 3.23.0), wzorzec konfiguracji `harness/harness.example.yml`.
+- Testy harnessu na atrapach (`tests/test_harness.py`): repo Git w `tmp_path`, atrapa Ansible i `ansible-playbook`, zegar testowy.
 - Manifest POL-006 (`scenarios/policy/policy-winbox-public.yml`): Winbox bez ograniczenia adresu, reguła uniwersalna bez `remediate` — `action: none`, `end_state: unchanged` (D-A).
 
 ### Zmienione

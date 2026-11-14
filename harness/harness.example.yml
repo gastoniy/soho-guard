@@ -1,0 +1,32 @@
+# Wzorzec harness.yml. Plik właściwy: --config, $SOHO_HARNESS_CONFIG albo harness/harness.yml
+# w repo (w .gitignore). Tylko adresy i ścieżki — żadnych wartości sekretów; katalog sekretów
+# trzymaj poza repozytorium. Ścieżki względne liczone od katalogu pliku konfiguracji.
+# Wszystkie wartości poniżej są przykładowe (adresy z RFC 5737).
+site_lab:
+  clone: /path/to/soho-guard-site-lab        # klon repo instalacji, tylko do odczytu (git fetch)
+  remote: origin
+  branch: main
+ansible:
+  inventory: /path/to/inventory.ini          # localhost z ansible_python_interpreter venv harnessu
+  vault_password_file: /path/to/secrets/vault.pass
+  # playbook_bin: ansible-playbook
+  # timeout_s: 300
+ca_path: /path/to/secrets/ca.crt             # CA do weryfikacji api-ssl routerów
+# results_dir: domyślnie <repo>/harness/results
+timing:
+  cycle_s: 300
+  avoid_window_s: 30
+  apply_margin_s: 60
+  poll_interval_s: 30
+  report_grace_s: 120
+routers:
+  r1:
+    mgmt_address: 192.0.2.1
+    vault_file: /path/to/secrets/vault-r1.yml   # zmienna vault_r1_ansible_pw
+    api_port: 8729
+    mgmt_return_timeout_s: 300
+  r2:
+    mgmt_address: 192.0.2.2
+    vault_file: /path/to/secrets/vault-r2.yml   # zmienna vault_r2_ansible_pw
+    api_port: 8729
+    mgmt_return_timeout_s: 300

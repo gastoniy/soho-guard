@@ -1,0 +1,8 @@
+---
+# Połączenie z routerem kontem `ansible` (api-ssl, weryfikacja CA). Zmienne router_id, router_host,
+# router_api_port, router_ca_path podaje harness (-e); hasło pochodzi z pliku Vault routera
+# (-e @vault-rN.yml, --vault-password-file) i nie pojawia się w wierszu poleceń ani w logu.
+routeros_user: ansible
+routeros_password: "{{ lookup('ansible.builtin.vars', 'vault_' ~ router_id ~ '_ansible_pw') }}"
+# Zadania z hasłem połączenia mają no_log; do diagnostyki operator może podać -e harness_no_log=false.
+harness_no_log: true

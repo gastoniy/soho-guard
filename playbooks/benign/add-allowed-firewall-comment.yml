@@ -1,0 +1,53 @@
+---
+# BEN-002: legalna zmiana dozwolona przez obie polityki — komentarz reguły filtra
+# (local-policy: drift.ignore firewall_filter/comment). Oczekiwany brak findingu (okno H10).
+# apply: komentarz reguły input/icmp → wartość BEN-002; revert (--tags revert): komentarz baseline.
+# Stałe zgodne z harness/probes.py (BEN002_COMMENT_*).
+- name: BEN-002 — zmiana komentarza reguły filtra
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/router.yml
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ router_host }}"
+      port: "{{ router_api_port }}"
+      username: "{{ routeros_user }}"
+      password: "{{ routeros_password }}"
+      tls: true
+      validate_certs: true
+      validate_cert_hostname: false
+      ca_path: "{{ router_ca_path }}"
+  vars:
+    ben002_baseline: "BL: in icmp"
+    ben002_applied: "BL: in icmp (BEN-002)"
+  tasks:
+    - name: apply — komentarz reguły input/icmp
+      community.routeros.api_find_and_modify:
+        path: ip firewall filter
+        find:
+          chain: input
+          protocol: icmp
+          action: accept
+          comment: "{{ ben002_baseline }}"
+        values:
+          comment: "{{ ben002_applied }}"
+        require_matches_min: 1
+        require_matches_max: 1
+      no_log: "{{ harness_no_log }}"
+      tags: [apply]
+
+    - name: revert — komentarz baseline
+      community.routeros.api_find_and_modify:
+        path: ip firewall filter
+        find:
+          chain: input
+          protocol: icmp
+          action: accept
+          comment: "{{ ben002_applied }}"
+        values:
+          comment: "{{ ben002_baseline }}"
+        require_matches_min: 0
+        require_matches_max: 1
+      no_log: "{{ harness_no_log }}"
+      tags: [revert, never]

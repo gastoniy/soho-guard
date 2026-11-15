@@ -1,11 +1,13 @@
-"""Testy harnessu (iteracja 1) — bez sieci, routerów i GitHuba.
+"""Testy harnessu (iteracje 1–2) — bez sieci, routerów i GitHuba.
 
 Repo instalacji: prawdziwe repo Git w tmp_path (origin bare + klon „agenta” + klon harnessu),
-raporty i stan w formacie agenta (z examples/). Router: atrapa Ansible ze stanem obiektu.
+raporty i stan w formacie agenta (z examples/), wzorce bramki. Router: atrapa Ansible ze stanem
+obiektów i atrapa SSH (eksport). GitHub: atrapa `gh`.
 Zegar: atrapa przesuwana przez sleep(), z zaplanowanymi zdarzeniami („agent publikuje raport”).
 """
 import copy
 import json
+import logging
 import os
 import random
 import stat
@@ -20,13 +22,15 @@ import yaml
 from harness import REPO_ROOT, HarnessError, UsageError
 from harness import __main__ as cli
 from harness import config as config_mod
-from harness import probes, results, sitelab, timing
+from harness import artifacts, gate, probes, results, scenario, sitelab, timing
 from harness.config import Config, RouterCfg, TimingCfg
-from harness.router import Ansible
+from harness.router import Ansible, Ssh
 from harness.scenario import Context, run_scenario
 
 EX = REPO_ROOT / "examples"
 POL003 = REPO_ROOT / "scenarios" / "policy" / "policy-socks-enabled.yml"
+BEN002 = REPO_ROOT / "scenarios" / "benign" / "benign-firewall-comment.yml"
+SITE007 = REPO_ROOT / "scenarios" / "site" / "site-ppp-secret.yml"
 RULE = "policy.services.socks.disabled"
 T_START = datetime(2026, 11, 13, 10, 1, 0, tzinfo=timezone.utc)
 
@@ -60,29 +64,117 @@ class FakeClock:
         self.sleep((when - self.t).total_seconds())
 
 
+GATE_READS = {
+    "user": [{"name": "ansible", "group": "bl-ansible", "address": "192.0.2.0/24",
+              "disabled": False, "last-logged-in": "nov/13/2026 10:00:00"},
+             {"name": "monitor", "group": "bl-monitor", "address": "192.0.2.0/24",
+              "disabled": "no"}],
+    "user ssh-keys": [{"user": "ansible", "key-owner": "ansible@host", "bits": 4096}],
+    "certificate": [{"name": "bl-api.crt_0", "common-name": "192.0.2.2", "fingerprint": "ab12",
+                     "trusted": False, "private-key": True, "expires-after": "51w"}],
+    "file": [{"name": "flash", "type": "directory", "size": 0},
+             {"name": "flash/pub", "type": "directory"}],
+}
+EXPORT_PATTERN = """# nov/13/2026 15:03:03 by RouterOS 6.49.19
+# software id =
+#
+/ip firewall filter add action=accept chain=input comment="BL: in icmp" protocol=icmp
+#error exporting /ip firewall calea
+/ip socks set enabled=no
+"""
+
+
 class FakeAnsible:
-    """Router z jednym obiektem `ip socks`; apply/revert zmieniają `enabled`."""
+    """Router: `ip socks`, reguła input/icmp, sekrety PPP i obiekty bramki; playbooki zmieniają stan."""
 
     def __init__(self, enabled=False, apply_effect=True, fail_tags=()):
         self.enabled = enabled
+        self.icmp_comment = probes.BEN002_COMMENT_BASELINE
+        self.ppp: list[str] = []
+        self.extra_user = False          # obiekt spoza wzorca bramki
+        self.export_extra: list[str] = []
+        self.leave_after_revert = False  # revert „zapomina” o zmianie → bramka po teardownie
         self.apply_effect = apply_effect
         self.fail_tags = set(fail_tags)
         self.calls: list[str] = []
 
     def read(self, router, path):
-        assert path == "ip socks"
         self.calls.append("read")
-        return [{"enabled": self.enabled, "port": 1080}]
+        if path == "ip socks":
+            return [{"enabled": self.enabled, "port": 1080}]
+        if path == "ip firewall filter":
+            return [{"chain": "input", "protocol": "icmp", "action": "accept",
+                     "comment": self.icmp_comment},
+                    {"chain": "input", "action": "drop", "comment": "BL: in drop all"}]
+        if path == "ppp secret":
+            return [{".id": "*1", "name": n, "service": "any", "password": "S3cr3tValue"}
+                    for n in self.ppp]
+        raise AssertionError(path)
+
+    def read_many(self, router, paths, raw=False):
+        if list(paths) == list(gate.OBJECT_FIELDS):
+            assert raw                               # bramka: print bez modelu wersji (v6)
+            self.calls.append("gate")
+            reads = copy.deepcopy(GATE_READS)
+            if self.extra_user:
+                reads["user"].append({"name": "intruder", "group": "full", "disabled": False})
+            return reads
+        return {p: self.read(router, p) for p in paths}
 
     def playbook(self, playbook, router, tags=None, extra=None):
-        assert playbook == "playbooks/policy/socks-enabled.yml"
         self.calls.append(tags)
         if tags in self.fail_tags:
             raise HarnessError(f"{playbook} [{tags}]: kod 2")
-        if tags == "apply" and self.apply_effect:
-            self.enabled = True
-        elif tags == "revert":
-            self.enabled = False
+        if tags == "apply" and not self.apply_effect:
+            return
+        apply = tags == "apply"
+        name = Path(playbook).stem
+        if name == "socks-enabled":
+            self.enabled = apply
+        elif name == "add-allowed-firewall-comment":
+            self.icmp_comment = (probes.BEN002_COMMENT_APPLIED if apply
+                                 else probes.BEN002_COMMENT_BASELINE)
+        elif name == "ppp-secret-add":
+            if apply:
+                self.ppp.append(probes.SITE007_SECRET)
+            else:
+                self.ppp = [n for n in self.ppp if n != probes.SITE007_SECRET]
+        else:
+            raise AssertionError(playbook)
+        if tags == "revert" and self.leave_after_revert:
+            self.extra_user = True
+
+
+class FakeSsh:
+    """Eksport = wzorzec z innym nagłówkiem (data), CRLF jak z RouterOS, plus ewentualne linie."""
+
+    def __init__(self, ans: FakeAnsible):
+        self.ans = ans
+
+    def export(self, router):
+        body = EXPORT_PATTERN.split("\n", 3)[3]
+        text = "# nov/14/2026 09:00:00 by RouterOS 6.49.19\n# software id =\n#\n" + body
+        text += "".join(ln + "\n" for ln in self.ans.export_extra)
+        return text.replace("\n", "\r\n")
+
+
+class FakeGitHub:
+    def __init__(self):
+        self.prs: dict[str, list[dict]] = {}
+        self.issues: list[dict] = []
+        self.closed: list[tuple[str, int, str]] = []
+
+    def prs_for_branch(self, branch):
+        return self.prs.get(branch, [])
+
+    def issues_for_report(self, path):
+        return [i for i in self.issues if path in i.get("body", "")]
+
+    def close_pr(self, n, comment):
+        self.closed.append(("pr", n, comment))
+
+    def close_issue(self, n, comment):
+        self.closed.append(("issue", n, comment))
 
 
 def git(cwd, *args, when: datetime | None = None):
@@ -135,6 +227,12 @@ class SiteRepo:
                        capture_output=True)
         git(self.agent, "checkout", "-q", "-b", "main")
         (self.agent / "site.yml").write_text(yaml.safe_dump(SITE_YML), encoding="utf-8")
+        for rid in ("r1", "r2"):
+            d = self.agent / "routers" / rid
+            d.mkdir(parents=True)
+            (d / "export.rsc").write_text(EXPORT_PATTERN, encoding="utf-8")
+            (d / "gate-objects.yml").write_text(
+                gate.dump_objects(rid, gate.project(GATE_READS), T_START), encoding="utf-8")
         self.commit_state(state, T_START - timedelta(minutes=30), "init")
         subprocess.run(["git", "clone", "-q", str(self.origin), str(self.clone)], check=True,
                        capture_output=True)
@@ -172,7 +270,7 @@ def lab(tmp_path):
     ans = FakeAnsible()
     cfg = make_cfg(tmp_path, repo.clone)
     ctx = Context(cfg=cfg, ansible=ans, site=sitelab.SiteLab(repo.clone), clock=clock,
-                  rng=random.Random(1))
+                  rng=random.Random(1), ssh=FakeSsh(ans), github=FakeGitHub())
     return repo, clock, ans, ctx
 
 
@@ -198,7 +296,7 @@ def test_pol003_pass(lab):
     res = run_scenario(ctx, POL003, offset_s=100)
 
     assert res["verdict"] == "pass", res["reasons"]
-    assert ans.calls == ["read", "apply", "read", "read", "revert"]
+    assert ans.calls == ["gate", "read", "apply", "read", "read", "revert", "gate"]
     assert res["timing"]["t0"] == ts(APPLY_AT)
     assert res["timing"]["planned_offset_s"] == 100
     assert res["timing"]["t0_grid_offset_s"] == 100
@@ -214,8 +312,11 @@ def test_pol003_pass(lab):
                                "policy_deployed": "v0.7.1-lab"}
     assert res["target"] == {"router_id": "r2", "manifest_router_id": "r2",
                              "target_override": False, "profile": "ros6"}
-    assert res["teardown"]["revert"] == "ok"
+    assert res["teardown"] == {"ok": True, "revert": "ok", "error": None,
+                               "gate": {"ok": True, "export_diff": [], "objects_diff": []}}
+    assert res["gate_before"]["ok"] is True
     assert res["preconditions"]["ok"] is True
+    assert res["artifacts"][0]["status"] == "not-expected"   # auto-remediate: bez PR/issue
 
 
 def test_pol003_target_override_records_profile(lab, tmp_path):
@@ -239,10 +340,12 @@ def test_precondition_open_findings_invalid(tmp_path):
                    open_findings=[{"rule": "local.ppp.secrets", "fingerprint": "sha256:x"}])
     repo = SiteRepo(tmp_path, st)
     ans = FakeAnsible()
+    clock = FakeClock(T_START)
     ctx = Context(make_cfg(tmp_path, repo.clone), ans, sitelab.SiteLab(repo.clone),
-                  FakeClock(T_START), random.Random(1))
+                  clock, random.Random(1), ssh=FakeSsh(ans))
     res = run_scenario(ctx, POL003, offset_s=100)
     assert res["verdict"] == "invalid"
+    assert clock.now() >= T_START + timedelta(seconds=900)   # czekał do precondition_wait_s
     assert any("open_findings" in r for r in res["reasons"])
     assert any("posture" in r for r in res["reasons"])
     assert ans.calls == []                       # nic nie dotknięto na routerze
@@ -254,7 +357,7 @@ def test_router_not_in_baseline_invalid(lab):
     ans.enabled = True
     res = run_scenario(ctx, POL003, offset_s=100)
     assert res["verdict"] == "invalid"
-    assert ans.calls == ["read"]
+    assert ans.calls == ["gate", "read"]
 
 
 def test_timeout_without_report(lab):
@@ -262,8 +365,8 @@ def test_timeout_without_report(lab):
     res = run_scenario(ctx, POL003, offset_s=100)
     assert res["verdict"] == "timeout"
     assert clock.now() >= APPLY_AT + timedelta(seconds=420 + 120)
-    assert ans.calls[-1] == "revert"
-    assert res["teardown"]["revert"] == "ok"
+    assert ans.calls[-2:] == ["revert", "gate"]
+    assert res["teardown"]["ok"] is True
 
 
 def test_other_rule_is_not_detection(lab):
@@ -306,17 +409,17 @@ def test_apply_not_confirmed_is_error(lab):
     res = run_scenario(ctx, POL003, offset_s=100)
     assert res["verdict"] == "error"
     assert "niepotwierdzony" in res["reasons"][0]
-    assert ans.calls[-1] == "revert"              # teardown także po błędzie
+    assert ans.calls[-2:] == ["revert", "gate"]   # teardown także po błędzie
 
 
-def test_revert_failure_turns_pass_into_error(lab):
+def test_revert_failure_keeps_verdict(lab):
     repo, clock, ans, ctx = lab
     ans.fail_tags = {"revert"}
     agent_detects(repo, clock, ans, APPLY_AT + timedelta(seconds=212))
     res = run_scenario(ctx, POL003, offset_s=100)
-    assert res["verdict"] == "error"
-    assert res["oracle"]["violations"] == []      # wynik oracle'a zachowany w wyniku
-    assert res["teardown"]["revert"] == "error"
+    assert res["verdict"] == "pass"               # werdykt agenta bez zmian (decyzja 2026-11-14)
+    assert res["teardown"]["ok"] is False and res["teardown"]["revert"] == "error"
+    assert res["teardown"]["gate"] is None        # bramki po nieudanym revert nie ma sensu robić
 
 
 def test_unknown_target_is_usage_error(lab):
@@ -444,7 +547,7 @@ Path({log!r}).open("a").write(json.dumps(argv) + "\\n")
 evars = [json.loads(argv[i + 1]) for i, a in enumerate(argv) if a == "-e" and not argv[i + 1].startswith("@")]
 out = evars[0].get("read_out")
 if out:
-    Path(out).write_text(json.dumps([{{"enabled": False, "port": 1080}}]))
+    Path(out).write_text(json.dumps({{p: [{{"enabled": False, "port": 1080}}] for p in evars[0]["read_paths"]}}))
 sys.exit({code})
 """
 
@@ -468,6 +571,8 @@ def test_ansible_read_and_command_line(tmp_path):
     calls = [json.loads(ln) for ln in log.read_text().splitlines()]
     read_argv, apply_argv = calls
     assert read_argv[-1] == "playbooks/common/read.yml" and "--tags" not in read_argv
+    read_vars = json.loads(read_argv[read_argv.index("-e", read_argv.index("-e") + 1) + 1])
+    assert read_vars["read_paths"] == ["ip socks"] and read_vars["read_raw"] is False
     assert apply_argv[-3:] == ["--tags", "apply", "playbooks/policy/socks-enabled.yml"]
     assert apply_argv[apply_argv.index("--vault-password-file") + 1] == str(tmp_path / "vault.pass")
     assert f"@{tmp_path / 'vault-r2.yml'}" in apply_argv
@@ -488,12 +593,35 @@ def test_ansible_failure_is_harness_error(tmp_path):
         a.playbook("playbooks/policy/nope.yml", cfg.router("r2"), "apply")
 
 
-def test_playbooks_have_apply_and_revert_tags():
-    doc = yaml.safe_load((REPO_ROOT / "playbooks/policy/socks-enabled.yml").read_text(encoding="utf-8"))
+SCENARIO_PLAYBOOKS = ["policy/socks-enabled.yml", "benign/add-allowed-firewall-comment.yml",
+                      "site/ppp-secret-add.yml"]
+
+
+@pytest.mark.parametrize("pb", SCENARIO_PLAYBOOKS)
+def test_playbooks_have_apply_and_revert_tags(pb):
+    doc = yaml.safe_load((REPO_ROOT / "playbooks" / pb).read_text(encoding="utf-8"))
     tags = [set(t.get("tags", [])) for t in doc[0]["tasks"]]
-    assert {"apply"} in tags and {"revert", "never"} in tags
+    assert {"apply"} in tags and {"revert", "never"} in tags     # D-D
+    assert all(t <= {"apply"} or {"revert", "never"} <= t for t in tags)
     for t in doc[0]["tasks"]:
-        assert t.get("no_log") == "{{ harness_no_log }}"
+        assert t.get("no_log") in ("{{ harness_no_log }}", True)
+
+
+def test_scenario_manifests_point_to_existing_playbooks_and_probes():
+    for mp in (POL003, BEN002, SITE007):
+        m = yaml.safe_load(mp.read_text(encoding="utf-8"))
+        assert (REPO_ROOT / m["apply"]["playbook"]).is_file(), m["id"]
+        probes.get(m["id"])
+
+
+def test_probe_constants_match_playbooks():
+    ben = (REPO_ROOT / "playbooks/benign/add-allowed-firewall-comment.yml").read_text(encoding="utf-8")
+    assert f'"{probes.BEN002_COMMENT_BASELINE}"' in ben and f'"{probes.BEN002_COMMENT_APPLIED}"' in ben
+    site = (REPO_ROOT / "playbooks/site/ppp-secret-add.yml").read_text(encoding="utf-8")
+    assert f"site007_name: {probes.SITE007_SECRET}" in site
+    tasks = yaml.safe_load(site)[0]["tasks"]
+    with_pw = [t for t in tasks if "password=" in json.dumps(t)]
+    assert with_pw and all(t["no_log"] is True for t in with_pw)   # zadanie z hasłem zawsze no_log
 
 
 # ---------------------------------------------------------------- konfiguracja
@@ -547,7 +675,7 @@ def test_cli_invalid_exit_3_stops_repeats(lab, tmp_path):
     repo, clock, ans, ctx = lab
     ans.enabled = True
     assert _cli(lab, ["run", str(POL003), "--offset", "100", "--repeat", "3"], tmp_path) == 3
-    assert ans.calls == ["read"]
+    assert ans.calls == ["gate", "read"]
     assert len(list(ctx.cfg.results_dir.glob("*.json"))) == 1
 
 
@@ -612,3 +740,488 @@ def test_example_and_defaults_have_no_local_paths():
         src = p.read_text(encoding="utf-8")
         assert not re.search(r"~/|/home/|10\.\d+\.\d+\.\d+|192\.168\.", src), p.name
     assert config_mod.DEFAULT_PATH == REPO_ROOT / "harness" / "harness.yml"
+
+
+# ================================================================ iteracja 2
+# ---------------------------------------------------------------- bramka (H5)
+def test_export_body_skips_only_header():
+    text = "# date\r\n# software id =\r\n#\r\n/a b\r\n#error exporting /x\r\n/c\r\n\r\n"
+    assert gate.export_body(text) == ["/a b", "#error exporting /x", "/c"]
+    with pytest.raises(HarnessError):
+        gate.export_body("# h\njunk\n/a\n")
+
+
+def test_diff_export_ignores_header_and_crlf_but_not_error_lines():
+    actual = "# inna data\r\n# software id =\r\n#\r\n" + EXPORT_PATTERN.split("\n", 3)[3].replace("\n", "\r\n")
+    assert gate.diff_export(actual, EXPORT_PATTERN) == []
+    new_err = actual + "#error exporting /interface bridge calea\r\n"
+    assert gate.diff_export(new_err, EXPORT_PATTERN) == ["@@ -3,0 +4 @@",       # numeracja treści
+                                                         "+#error exporting /interface bridge calea"]
+    changed = actual.replace("enabled=no", "enabled=yes")
+    d = gate.diff_export(changed, EXPORT_PATTERN)
+    assert "-/ip socks set enabled=no" in d and "+/ip socks set enabled=yes" in d
+
+
+def test_objects_projection_roundtrip_and_diff():
+    proj = gate.project(GATE_READS)
+    assert proj["user"][0] == {"name": "ansible", "group": "bl-ansible", "address": "192.0.2.0/24",
+                               "disabled": "false"}               # bez last-logged-in
+    assert proj["user"][1]["disabled"] == "false"                 # "no" → "false"
+    assert "expires-after" not in proj["certificate"][0] and "size" not in proj["file"][0]
+    ref = gate.load_objects_ref(gate.dump_objects("r2", proj, T_START), "r2")
+    assert gate.diff_objects(proj, ref) == []
+    extra = copy.deepcopy(GATE_READS)
+    extra["user ssh-keys"].append({"user": "admin", "key-owner": "x", "bits": 2048})
+    del extra["file"][1]
+    d = gate.diff_objects(gate.project(extra), ref)
+    assert any(x.startswith("+ user ssh-keys:") and "admin" in x for x in d)
+    assert any(x.startswith("- file:") and "flash/pub" in x for x in d)
+
+
+@pytest.mark.parametrize("text,needle", [
+    ("schema_version: '1'\nrouter_id: r1\nobjects: {}\n", "router_id"),
+    ("schema_version: '1'\nrouter_id: r2\nobjects: {user: []}\n", "brak menu"),
+    ("[", "błędny YAML"),
+])
+def test_objects_ref_validation(text, needle):
+    with pytest.raises(HarnessError, match=needle):
+        gate.load_objects_ref(text, "r2")
+
+
+def test_gate_before_apply_mismatch_is_invalid(lab):
+    repo, clock, ans, ctx = lab
+    ans.extra_user = True
+    res = run_scenario(ctx, POL003, offset_s=100)
+    assert res["verdict"] == "invalid" and "przed apply" in res["reasons"][0]
+    assert res["gate_before"]["objects_diff"] == [
+        '+ user: {"disabled": "false", "group": "full", "name": "intruder"}']
+    assert ans.calls == ["gate"]                  # router nietknięty
+
+
+def test_gate_export_mismatch_before_apply(lab):
+    repo, clock, ans, ctx = lab
+    ans.export_extra = ["/ip service set telnet disabled=no"]
+    res = run_scenario(ctx, POL003, offset_s=100)
+    assert res["verdict"] == "invalid"
+    assert "+/ip service set telnet disabled=no" in res["gate_before"]["export_diff"]
+
+
+def test_teardown_gate_mismatch_keeps_verdict_and_cli_aborts(lab, tmp_path, capsys):
+    repo, clock, ans, ctx = lab
+    ans.leave_after_revert = True
+    agent_detects(repo, clock, ans, APPLY_AT + timedelta(seconds=212))
+    assert _cli(lab, ["run", str(POL003), "--offset", "100", "--repeat", "2"], tmp_path) == 3
+    doc = json.loads(next(ctx.cfg.results_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert doc["verdict"] == "pass"
+    assert doc["teardown"]["ok"] is False and doc["teardown"]["revert"] == "ok"
+    assert "po revert" in doc["teardown"]["error"]
+    assert doc["teardown"]["gate"]["objects_diff"]
+    assert "TEARDOWN-NIEZGODNY" in capsys.readouterr().out
+    assert len(list(ctx.cfg.results_dir.glob("*.json"))) == 1      # drugie powtórzenie przerwane
+
+
+def test_missing_gate_reference_is_error(lab):
+    repo, clock, ans, ctx = lab
+    (repo.agent / "routers" / "r2" / "gate-objects.yml").unlink()
+    repo.commit_state(state_doc(), T_START - timedelta(minutes=10), "bez wzorca")
+    res = run_scenario(ctx, POL003, offset_s=100)
+    assert res["verdict"] == "error" and "--dump-objects" in res["reasons"][0]
+    assert "apply" not in ans.calls
+
+
+# ---------------------------------------------------------------- H8 z czekaniem
+def test_preconditions_wait_until_agent_resolves(lab):
+    repo, clock, ans, ctx = lab
+    repo.commit_state(state_doc(posture="site-drift", open_findings=[{"rule": "local.ppp.secrets"}]),
+                      T_START - timedelta(minutes=5), "drift")
+    clock.at(T_START + timedelta(seconds=200),
+             lambda: repo.commit_state(state_doc(), T_START + timedelta(seconds=200), "resolved"))
+    first_seen = T_START + timedelta(seconds=200 + 400)
+
+    def fire():
+        ans.enabled = False
+        repo.commit_state(state_doc(), first_seen + timedelta(seconds=10), "raport",
+                          report=report_doc(first_seen))
+    clock.at(first_seen + timedelta(seconds=10), fire)
+    res = run_scenario(ctx, POL003, offset_s=100)
+    assert res["verdict"] == "pass", res["reasons"]
+    assert timing.parse_ts(res["timing"]["t0"]) > T_START + timedelta(seconds=200)
+
+
+# ---------------------------------------------------------------- H10 (BEN-002)
+HB_AT = datetime(2026, 11, 13, 9, 51, 15, tzinfo=timezone.utc)    # ostatni heartbeat
+HB_NEXT = datetime(2026, 11, 13, 10, 25, 20, tzinfo=timezone.utc)  # przewidywany (siatka + 20 s)
+BEN_APPLY = datetime(2026, 11, 13, 10, 11, 40, tzinfo=timezone.utc)
+
+
+def h10_state(seq, at):
+    return state_doc(last_run={"run_id": f"R{seq}", "run_seq": seq, "finished_at": ts(at)},
+                     heartbeat={"at": ts(at), "interval_s": 1800})
+
+
+@pytest.fixture
+def h10(tmp_path):
+    repo = SiteRepo(tmp_path, h10_state(100, HB_AT))
+    clock = FakeClock(T_START)
+    ans = FakeAnsible()
+    ctx = Context(make_cfg(tmp_path, repo.clone), ans, sitelab.SiteLab(repo.clone), clock,
+                  random.Random(1), ssh=FakeSsh(ans), github=FakeGitHub())
+    return repo, clock, ans, ctx
+
+
+def heartbeat_at(repo, clock, when, seq, report=None):
+    clock.at(when, lambda: repo.commit_state(h10_state(seq, when - timedelta(seconds=5)), when,
+                                             f"heartbeat {seq}", report=report))
+
+
+def test_predict_heartbeat_and_plan_h10():
+    assert timing.predict_heartbeat(HB_AT, 1800) == HB_NEXT
+    cfg = TimingCfg()
+    t, off, hb = timing.plan_h10(T_START, HB_AT, 1800, cfg, random.Random(), fixed_offset_s=100)
+    assert (t, off, hb) == (BEN_APPLY, 100, HB_NEXT)
+    lead = (hb - t).total_seconds()
+    assert 570 <= lead <= 870                     # ok. 12 min przed heartbeatem
+    late = HB_NEXT - timedelta(minutes=5)          # za późno → następny heartbeat
+    t2, _, hb2 = timing.plan_h10(late, HB_AT, 1800, cfg, random.Random(), fixed_offset_s=100)
+    assert hb2 == HB_NEXT + timedelta(seconds=1800) and t2 > late
+
+
+def test_predict_heartbeat_borderline_takes_earlier_cycle():
+    # lab 2026-11-14 r2: heartbeat 20:00:17.073, kolejny commit 20:30:20 (nie 20:35:20)
+    prev = datetime(2026, 11, 14, 20, 0, 17, 73000, tzinfo=timezone.utc)
+    assert timing.predict_heartbeat(prev, 1800) == datetime(2026, 11, 14, 20, 30, 20,
+                                                            tzinfo=timezone.utc)
+
+
+def test_plan_h10_random_lead_bounds():
+    cfg = TimingCfg()
+    rng = random.Random(3)
+    for i in range(200):
+        now = T_START + timedelta(seconds=rng.uniform(0, 1800))
+        t, off, hb = timing.plan_h10(now, HB_AT, 1800, cfg, rng)
+        assert t > now and not timing.in_avoid_window(t, cfg)
+        assert 480 <= (hb - t).total_seconds() <= 990
+
+
+def test_ben002_pass_on_heartbeat_window(h10):
+    repo, clock, ans, ctx = h10
+    heartbeat_at(repo, clock, HB_NEXT, 105)
+    res = run_scenario(ctx, BEN002, offset_s=100)
+    assert res["verdict"] == "pass", res["reasons"]
+    assert res["timing"]["t0"] == ts(BEN_APPLY)
+    assert res["timing"]["predicted_heartbeat_at"] == ts(HB_NEXT)
+    assert res["window"]["base_run_seq"] == 100 and res["window"]["closing_run_seq"] == 105
+    assert res["window"]["reports"] == []
+    assert res["metrics"] == {"window_s": (HB_NEXT - BEN_APPLY).total_seconds()}
+    assert ans.icmp_comment == probes.BEN002_COMMENT_BASELINE          # revert
+    assert ans.calls == ["gate", "read", "apply", "read", "revert", "gate"]
+    assert res["artifacts"] is None
+
+
+def test_ben002_window_needs_run_seq_plus_two(h10):
+    repo, clock, ans, ctx = h10
+    heartbeat_at(repo, clock, BEN_APPLY + timedelta(seconds=200), 101)   # +1: okno trwa
+    heartbeat_at(repo, clock, HB_NEXT + timedelta(minutes=5), 107)
+    res = run_scenario(ctx, BEN002, offset_s=100)
+    assert res["verdict"] == "pass" and res["window"]["closing_run_seq"] == 107
+
+
+def test_ben002_window_needs_two_cycles_after_t0(h10):
+    # stan bazowy sprzed wielu cykli: run_seq +6 już w pierwszym cyklu po t0 nie zamyka okna
+    repo, clock, ans, ctx = h10
+    heartbeat_at(repo, clock, BEN_APPLY + timedelta(seconds=230), 106)   # cykl 10:15 = 1. po t0
+    heartbeat_at(repo, clock, HB_NEXT, 107)
+    res = run_scenario(ctx, BEN002, offset_s=100)
+    assert res["verdict"] == "pass", res["reasons"]
+    assert res["window"]["closing_run_seq"] == 107
+    assert res["window"]["closing_cycles_after_t0"] == 3
+
+
+def test_cycles_after():
+    t0 = datetime(2026, 11, 14, 20, 21, 56, tzinfo=timezone.utc)
+    fin = lambda h, m, sec: datetime(2026, 11, 14, h, m, sec, tzinfo=timezone.utc)  # noqa: E731
+    assert scenario.cycles_after(t0, fin(20, 25, 17), 300) == 1
+    assert scenario.cycles_after(t0, fin(20, 30, 17), 300) == 2
+
+
+def test_precondition_wait_logs_only_changes(tmp_path, caplog):
+    st = state_doc(posture="site-drift", open_findings=[{"rule": "local.ppp.secrets"}])
+    repo = SiteRepo(tmp_path, st)
+    ans = FakeAnsible()
+    clock = FakeClock(T_START)
+    ctx = Context(make_cfg(tmp_path, repo.clone), ans, sitelab.SiteLab(repo.clone),
+                  clock, random.Random(1), ssh=FakeSsh(ans))
+    clock.at(T_START + timedelta(seconds=200),
+             lambda: repo.commit_state(state_doc(), T_START + timedelta(seconds=200), "resolved"))
+    with caplog.at_level(logging.INFO, logger="harness"):
+        run_scenario(ctx, POL003, offset_s=100)
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum("niespełnione" in m for m in msgs) == 1
+    assert any(m.startswith("warunki wstępne spełnione po") for m in msgs)
+
+
+def test_ben002_new_finding_in_window_fails(h10):
+    repo, clock, ans, ctx = h10
+    rep = report_doc(BEN_APPLY + timedelta(seconds=210), rule="local.drift.firewall-filter", seq=103)
+    clock.at(BEN_APPLY + timedelta(seconds=220),
+             lambda: repo.commit_state(h10_state(103, BEN_APPLY + timedelta(seconds=215)),
+                                       BEN_APPLY + timedelta(seconds=220), "drift", report=rep))
+    heartbeat_at(repo, clock, HB_NEXT, 105)
+    res = run_scenario(ctx, BEN002, offset_s=100)
+    assert res["verdict"] == "fail"
+    assert any("nowego findingu" in r for r in res["reasons"])
+    assert len(res["window"]["reports"]) == 1
+
+
+def test_ben002_timeout_without_state_commit(h10):
+    repo, clock, ans, ctx = h10
+    res = run_scenario(ctx, BEN002, offset_s=100)
+    assert res["verdict"] == "timeout" and "okno H10" in res["reasons"][0]
+    assert clock.now() >= BEN_APPLY + timedelta(seconds=2700)
+    assert res["teardown"]["ok"] is True
+
+
+# ---------------------------------------------------------------- SITE-007 + artefakty (H9)
+def site_report(first_seen, seq=6, action="open-pr"):
+    rep = report_doc(first_seen, rule="local.ppp.secrets", seq=seq)
+    rep["findings"][0].update(rule_source="local")
+    rep["verdict"]["posture"] = "site-drift"
+    rep["actions"][0].update(type=action, status="succeeded", verification=None)
+    return rep
+
+
+def agent_drift(repo, clock, first_seen, action="open-pr"):
+    rep = site_report(first_seen, action=action)
+    commit_at = first_seen + timedelta(seconds=10)
+    st = state_doc(posture="site-drift", open_findings=[{"rule": "local.ppp.secrets"}])
+    clock.at(commit_at, lambda: repo.commit_state(st, commit_at, "agent(r2): site-drift", report=rep))
+    return rep
+
+
+def test_site007_pass_with_pr(lab):
+    repo, clock, ans, ctx = lab
+    rep = agent_drift(repo, clock, APPLY_AT + timedelta(seconds=212))
+    branch = f"agent/r2/{rep['run']['run_id']}"
+    ctx.github.prs[branch] = [{"number": 41, "url": "u", "state": "OPEN", "headRefName": branch}]
+    res = run_scenario(ctx, SITE007, offset_s=100)
+    assert res["verdict"] == "pass", res["reasons"]
+    assert res["router_read"]["pre"] is None                       # baseline: brak sekretu
+    assert res["router_read"]["end"]["name"] == probes.SITE007_SECRET   # end_state: unchanged
+    assert ans.ppp == []                                            # revert usunął sekret
+    art = res["artifacts"][0]
+    assert art["status"] == "ok" and art["branch"] == branch and art["prs"][0]["number"] == 41
+    assert ctx.github.closed == []                                  # domyślnie bez zamykania
+
+
+def test_site007_artifact_missing_keeps_verdict(lab):
+    repo, clock, ans, ctx = lab
+    agent_drift(repo, clock, APPLY_AT + timedelta(seconds=212))
+    res = run_scenario(ctx, SITE007, offset_s=100)
+    assert res["verdict"] == "pass"
+    assert res["artifacts"][0]["status"] == "artifact_missing"
+
+
+def test_close_artifacts_only_from_this_run(lab):
+    repo, clock, ans, ctx = lab
+    rep = agent_drift(repo, clock, APPLY_AT + timedelta(seconds=212), action="alert")
+    path = f"reports/r2/2026/11/{rep['run']['run_seq']:06d}-{rep['run']['run_id']}.json"
+    ctx.github.issues = [{"number": 7, "url": "u", "state": "OPEN", "body": f"raport: {path}"},
+                         {"number": 8, "url": "u", "state": "OPEN", "body": "inny raport"}]
+    res = run_scenario(ctx, SITE007, offset_s=100, close_artifacts=True, run_id="h-test")
+    assert res["verdict"] == "pass"
+    assert res["artifacts"][0]["closed"] == ["issue#7"]
+    assert ctx.github.closed == [("issue", 7, "harness h-test")]
+
+
+def test_artifacts_expected_counts():
+    rep = {"run": {"run_id": "R"}, "actions": [
+        {"type": "alert", "status": "succeeded"}, {"type": "alert", "status": "failed"},
+        {"type": "open-pr", "status": "succeeded"}, {"type": "auto-remediate", "status": "succeeded"}]}
+    assert artifacts.expected(rep) == {"pr": True, "issues": 1}
+
+
+def test_close_skips_closed_and_foreign_branch():
+    gh = FakeGitHub()
+    art = {"branch": "agent/r2/R", "prs": [
+        {"number": 1, "state": "OPEN", "headRefName": "agent/r2/R"},
+        {"number": 2, "state": "MERGED", "headRefName": "agent/r2/R"},
+        {"number": 3, "state": "OPEN", "headRefName": "agent/r2/X"}],
+        "issues": [{"number": 9, "state": "CLOSED"}]}
+    assert artifacts.close(gh, art, "h1") == ["pr#1"]
+
+
+# ---------------------------------------------------------------- SSH / gh (wiersz poleceń)
+def test_ssh_export_command_and_errors(tmp_path):
+    cfg = Config(**{**make_cfg(tmp_path, tmp_path).__dict__, "ssh_config": tmp_path / "ssh_config"})
+    seen = []
+
+    def runner(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="/x\n", stderr="")
+    s = Ssh(cfg, runner=runner)
+    assert s.export(cfg.router("r2")) == "/x\n"
+    assert seen[0] == ["ssh", "-F", str(tmp_path / "ssh_config"), "-l", "ansible", "-o",
+                       "BatchMode=yes", "192.0.2.2", "/export terse hide-sensitive"]
+    bad = Ssh(cfg, runner=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 255, "", "denied"))
+    with pytest.raises(HarnessError, match="kod 255"):
+        bad.export(cfg.router("r2"))
+
+
+def test_github_queries_filter_results(tmp_path):
+    out = {"pr": json.dumps([{"number": 1, "headRefName": "agent/r2/R", "state": "OPEN", "url": "u"},
+                             {"number": 2, "headRefName": "agent/r2/R2", "state": "OPEN", "url": "u"}]),
+           "issue": json.dumps([{"number": 5, "state": "OPEN", "url": "u", "body": "x reports/a.json"},
+                                {"number": 6, "state": "OPEN", "url": "u", "body": "reports/b.json"}])}
+    calls = []
+
+    def runner(cmd, **kw):
+        calls.append((cmd, kw["cwd"]))
+        return subprocess.CompletedProcess(cmd, 0, stdout=out[cmd[1]], stderr="")
+    gh = artifacts.GitHub("gh", tmp_path, runner=runner)
+    assert [p["number"] for p in gh.prs_for_branch("agent/r2/R")] == [1]
+    assert gh.issues_for_report("reports/a.json") == [{"number": 5, "url": "u", "state": "OPEN"}]
+    assert all(c[1] == str(tmp_path) for c in calls)
+    assert all(c[0][2] == "list" for c in calls)                 # tylko odczyt
+
+
+# ---------------------------------------------------------------- CLI gate, log
+def test_cli_gate_ok_and_mismatch(lab, tmp_path, capsys):
+    repo, clock, ans, ctx = lab
+    assert _cli(lab, ["gate", "r2"], tmp_path) == 0
+    assert "bramka zgodna" in capsys.readouterr().out
+    ans.extra_user = True
+    assert _cli(lab, ["gate", "r2"], tmp_path) == 3
+    assert "intruder" in capsys.readouterr().out
+
+
+def test_cli_gate_dump_objects(lab, tmp_path, capsys):
+    assert _cli(lab, ["gate", "r2", "--dump-objects"], tmp_path) == 0
+    text = capsys.readouterr().out
+    assert text.startswith("# Wzorzec bramki H5")
+    assert gate.load_objects_ref(text, "r2") == gate.project(GATE_READS)
+
+
+def test_cli_writes_log_next_to_result(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    agent_detects(repo, clock, ans, APPLY_AT + timedelta(seconds=212))
+    assert _cli(lab, ["run", str(POL003), "--offset", "100"], tmp_path) == 0
+    res = next(ctx.cfg.results_dir.glob("*.json"))
+    logf = res.with_name(res.name.split("-POL-003")[0] + ".log")
+    text = logf.read_text(encoding="utf-8")
+    assert "t0=" in text and "werdykt pass" in text
+
+
+def test_config_requires_ssh(tmp_path):
+    doc = yaml.safe_load((REPO_ROOT / "harness" / "harness.example.yml").read_text(encoding="utf-8"))
+    doc.pop("ssh")
+    p = tmp_path / "harness.yml"
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(UsageError, match="ssh"):
+        config_mod.load(p)
+    cfg = config_mod.load(REPO_ROOT / "harness" / "harness.example.yml")
+    assert cfg.windows == {"benign": 2700, "control": 2700} and cfg.artifacts.timeout_s == 300
+
+
+def test_diff_export_pattern_with_crlf():
+    """Wzorce export.rsc w site-lab mają CRLF (jak wyjście RouterOS); router też zwraca CRLF."""
+    pattern_crlf = EXPORT_PATTERN.replace("\n", "\r\n")
+    actual = "# inna data\r\n# software id =\r\n#\r\n" + EXPORT_PATTERN.split("\n", 3)[3].replace("\n", "\r\n")
+    assert gate.diff_export(actual, pattern_crlf) == []
+    assert gate.diff_export(actual.replace("\r\n", "\n"), pattern_crlf) == []
+
+
+def test_cli_gate_dump_to_output_only_on_success(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    out = tmp_path / "gate-objects.yml"
+    assert _cli(lab, ["gate", "r2", "--dump-objects", "--output", str(out)], tmp_path) == 0
+    assert gate.load_objects_ref(out.read_text(encoding="utf-8"), "r2") == gate.project(GATE_READS)
+
+    def broken(*a, **kw):
+        raise HarnessError("playbooks/common/read.yml [None]: kod 2")
+    ans.read_many = broken
+    out2 = tmp_path / "nowy.yml"
+    assert _cli(lab, ["gate", "r2", "--dump-objects", "--output", str(out2)], tmp_path) == 3
+    assert not out2.exists() and not list(tmp_path.glob("*.tmp"))
+    assert _cli(lab, ["gate", "r2", "--output", str(out2)], tmp_path) == 2
+
+
+def test_read_playbook_uses_print_for_raw():
+    doc = yaml.safe_load((REPO_ROOT / "playbooks/common/read.yml").read_text(encoding="utf-8"))
+    tasks = {t["name"]: t for t in doc[0]["tasks"]}
+    assert "community.routeros.api" in tasks["Odczyt menu (print)"]
+    assert set(tasks["Odczyt menu (print)"]["community.routeros.api"]) == {"path"}   # tylko print
+    assert "community.routeros.api_info" in tasks["Odczyt menu (api_info)"]
+
+
+def test_gate_summary_counts_changed_lines_only():
+    g = gate.GateResult(ok=False, export_diff=["@@ -33 +33 @@", "-/a", "+/b"], objects_diff=["+ file: x"])
+    assert g.summary() == "bramka niezgodna: eksport 2 linii różnic, obiekty 1 różnic"
+
+
+# ---------------------------------------------------------------- poprawki po labie 2026-11-14
+def test_site007_result_never_contains_secret_values(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    agent_drift(repo, clock, APPLY_AT + timedelta(seconds=212))
+    res = run_scenario(ctx, SITE007, offset_s=100)
+    assert res["router_read"]["confirm"] == {"name": probes.SITE007_SECRET}
+    assert res["router_read"]["end"] == {"name": probes.SITE007_SECRET}
+    p = results.write(res, tmp_path / "out")
+    assert "S3cr3tValue" not in p.read_text(encoding="utf-8")
+    assert "password" not in p.read_text(encoding="utf-8")
+
+
+def test_probe_view_drops_sensitive_fields():
+    pr = probes.Probe(path="x", where={"name": "a"}, applied={"password": "p", "comment": "c"},
+                      baseline=None)
+    assert probes.view({"name": "a", "password": "p", "comment": "c", "other": 1}, pr) == \
+        {"comment": "c", "name": "a"}
+    assert probes.view(None, pr) is None
+
+
+def test_close_artifacts_skipped_when_teardown_failed(lab):
+    repo, clock, ans, ctx = lab
+    ans.leave_after_revert = True
+    rep = agent_drift(repo, clock, APPLY_AT + timedelta(seconds=212))
+    branch = f"agent/r2/{rep['run']['run_id']}"
+    ctx.github.prs[branch] = [{"number": 42, "url": "u", "state": "OPEN", "headRefName": branch}]
+    res = run_scenario(ctx, SITE007, offset_s=100, close_artifacts=True)
+    assert res["teardown"]["ok"] is False
+    assert res["artifacts"][0]["closed"] == [] and "teardown" in res["artifacts"][0]["close_skipped"]
+    assert ctx.github.closed == []
+
+
+class InterruptingClock(FakeClock):
+    def __init__(self, start, after_s):
+        super().__init__(start)
+        self.limit = start + timedelta(seconds=after_s)
+
+    def sleep(self, seconds):
+        super().sleep(seconds)
+        if self.t >= self.limit:
+            raise KeyboardInterrupt
+
+
+def test_ctrl_c_after_apply_runs_teardown_and_writes_result(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    ctx.clock = InterruptingClock(T_START, after_s=120)       # w trakcie czekania na raport
+    assert _cli(lab, ["run", str(POL003), "--offset", "100"], tmp_path) == 3
+    doc = json.loads(next(ctx.cfg.results_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert doc["verdict"] == "error" and doc["interrupted"] is True
+    assert "SIGINT" in doc["reasons"][0]
+    assert ans.calls[-2:] == ["revert", "gate"] and ans.enabled is False
+
+
+def test_ctrl_c_while_waiting_preconditions(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    repo.commit_state(state_doc(posture="site-drift", open_findings=[{"rule": "local.ppp.secrets"}]),
+                      T_START - timedelta(minutes=5), "drift")
+    ctx.clock = InterruptingClock(T_START, after_s=60)
+    assert _cli(lab, ["run", str(POL003), "--offset", "100"], tmp_path) == 3
+    doc = json.loads(next(ctx.cfg.results_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert doc["verdict"] == "error" and ans.calls == []
+
+
+def test_site007_revert_loop_does_not_use_dotted_selectattr():
+    doc = yaml.safe_load((REPO_ROOT / "playbooks/site/ppp-secret-add.yml").read_text(encoding="utf-8"))
+    remove = [t for t in doc[0]["tasks"] if "remove" in t.get("community.routeros.api", {})][0]
+    assert "select('mapping')" in remove["loop"] and "selectattr('.id'" not in remove["loop"]

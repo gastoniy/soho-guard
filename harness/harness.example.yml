@@ -12,6 +12,18 @@ ansible:
   # playbook_bin: ansible-playbook
   # timeout_s: 300
 ca_path: /path/to/secrets/ca.crt             # CA do weryfikacji api-ssl routerów
+ssh:
+  config: /path/to/ssh_config                # Host per router: IdentityFile, UserKnownHostsFile, BatchMode
+  # bin: ssh
+  # timeout_s: 120
+# github:
+#   bin: gh                                  # tylko odczyt PR/issue; zamykanie wyłącznie z --close-artifacts
+artifacts:
+  timeout_s: 300
+  poll_s: 15
+windows:                                     # H10: maksymalne okno „brak findingu” od t0 [s]
+  benign: 2700
+  control: 2700
 # results_dir: domyślnie <repo>/harness/results
 timing:
   cycle_s: 300
@@ -19,6 +31,8 @@ timing:
   apply_margin_s: 60
   poll_interval_s: 30
   report_grace_s: 120
+  precondition_wait_s: 900
+  heartbeat_lead_s: 720
 routers:
   r1:
     mgmt_address: 192.0.2.1

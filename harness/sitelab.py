@@ -28,6 +28,13 @@ class ReportRef:
 
 
 @dataclass(frozen=True)
+class StateRef:
+    commit: str
+    committed_at: datetime
+    state: dict
+
+
+@dataclass(frozen=True)
 class Detection:
     ref: ReportRef
     report: dict
@@ -86,6 +93,24 @@ class SiteLab:
             for path in sorted(p for p in lines[1:] if p.endswith(".json")):
                 refs.append(ReportRef(path=path, commit=sha, committed_at=parse_ts(cdate)))
         return refs
+
+    def state_commits_since(self, base: str, head: str, router_id: str) -> list[StateRef]:
+        """Commity zmieniające `state/<router>.json` w base..head (najstarszy pierwszy)."""
+        out = self._git("log", "--reverse", "--format=%H%x09%cI", f"{base}..{head}", "--",
+                        f"state/{router_id}.json")
+        refs = []
+        for line in out.splitlines():
+            if line.strip():
+                sha, cdate = line.split("\t")
+                refs.append(StateRef(sha, parse_ts(cdate), self.state(sha, router_id)))
+        return refs
+
+    def router_file(self, sha: str, site: dict, router_id: str, name: str) -> str:
+        """Plik z katalogu routera wskazanego w site.yml (`routers[].path`)."""
+        for r in site.get("routers") or []:
+            if r.get("router_id") == router_id:
+                return self.show(sha, f"{r['path'].rstrip('/')}/{name}")
+        raise HarnessError(f"router '{router_id}' nieobecny w site.yml")
 
     def find_detection(self, base: str, head: str, router_id: str, rule: str,
                        not_before: datetime) -> Detection | None:

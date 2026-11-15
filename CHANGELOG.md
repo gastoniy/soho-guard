@@ -4,6 +4,13 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 
 ## [Unreleased]
 ### Dodane
+- Harness, iteracja 2 — bramka H5 (`harness/gate.py`): `/export terse hide-sensitive` przez SSH (konto `ansible`, `-F <ssh_config>`) porównany z `routers/<id>/export.rsc` — pomijany tylko nagłówek, `#error exporting` dosłownie — oraz `/user`, `/user ssh-keys`, `/certificate`, `/file` (pola stabilne) porównane z nowym wzorcem `routers/<id>/gate-objects.yml` w site-lab. Wzorzec: `python -m harness gate <router> --dump-objects`, wnoszony PR-em operatora (jak `export.rsc`). CLI `gate <router>` (0 zgodna, 3 niezgodna).
+- Przebieg: bramka przed apply (niezgodna → `invalid`), teardown `--tags revert` + bramka; nieudany teardown nie zmienia werdyktu scenariusza (`teardown.ok = false`), CLI kończy się kodem 3 i przerywa powtórzenia.
+- Okno H10 dla scenariuszy bez detekcji: apply ok. 12 min przed przewidywanym heartbeatem (`timing.heartbeat_lead_s`), zamknięcie na pierwszym commicie stanu z `run_seq` ≥ +2, którego przebieg jest co najmniej drugim cyklem po `t0` (`window.closing_cycles_after_t0`; przewidywany jest najwcześniejszy możliwy heartbeat), oracle na raportach z okna, maksimum `windows.<klasa>` → `timeout`.
+- Warunki wstępne H8 z czekaniem do `timing.precondition_wait_s` (np. przy `--repeat` po SITE-007) i ponowną kontrolą tuż przed apply.
+- Artefakty H9: numery PR (`agent/<router>/<run_id>`) i issue (ścieżka raportu) przez `gh` tylko do odczytu, `artifact_missing` bez zmiany werdyktu; `--close-artifacts` zamyka wyłącznie artefakty z przebiegu (komentarz `harness <run_id>`, bez usuwania gałęzi).
+- Playbooki `benign/add-allowed-firewall-comment.yml` (BEN-002), `site/ppp-secret-add.yml` (SITE-007, hasło losowane, `no_log`); `common/read.yml` czyta kilka menu w jednym przebiegu.
+- Log przebiegu `<run_id>.log` obok wyniku JSON (znaczniki w UTC; oczekiwanie na warunki wstępne logowane tylko przy zmianie); w wyniku `gate_before`, `teardown.gate`, `window`, `artifacts`.
 - Harness, iteracja 1 (`harness/`, `playbooks/`): `python -m harness run <manifest> [--target R] [--repeat N] [--offset S] [--seed N]` dla scenariuszy wykrywanych z krokiem `apply`. Przebieg: warunki wstępne H8 ze stanu w site-lab (`invalid` przy niespełnieniu) → odczyt obiektu w baseline → apply w losowym momencie poza oknem `:X0…:X0+30 s` → `t0` = potwierdzenie zmiany odczytem `community.routeros.api_info` (api-ssl, CA) → czekanie na raport z regułą `new` (budżet MTTD + 120 s, `timeout`) → `oracle_eval` + MTTD/czas do powiadomienia/czas do naprawy (H11) + `end_state` własnym odczytem → `--tags revert` → wynik JSON w `harness/results/` (H7). Kody wyjścia 0/1/2/3.
 - Playbooki: `common/read.yml` (odczyt menu do JSON), `policy/socks-enabled.yml` (POL-003, apply + `revert`); hasło konta `ansible` wyłącznie z pliku Vault routera, zadania z połączeniem `no_log`.
 - `requirements-harness.txt` (`ansible-core==2.21.6`, `librouteros==4.2.2`, `pyyaml`, `jsonschema`), `playbooks/requirements.yml` (`community.routeros` 3.23.0), wzorzec konfiguracji `harness/harness.example.yml`.
@@ -11,6 +18,8 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 - Manifest POL-006 (`scenarios/policy/policy-winbox-public.yml`): Winbox bez ograniczenia adresu, reguła uniwersalna bez `remediate` — `action: none`, `end_state: unchanged` (D-A).
 
 ### Zmienione
+- `harness.yml`: wymagana sekcja `ssh.config`; nowe `artifacts`, `windows`, `timing.precondition_wait_s`, `timing.heartbeat_lead_s`.
+- Nieudany `revert` nie zamienia już werdyktu na `error` (decyzja 2026-11-14).
 - `manifest_lint.py`: klasa `policy` dopuszcza parę `action: none` + `end_state: unchanged` obok `auto-remediate` + `baseline`; pary krzyżowe są błędem. Schemat `scenario.schema.json` bez zmian.
 - Budżet MTTD scenariuszy POL/SITE: 420 s (cykl 300 s + odczyt L1 + zapas) — POL-003, SITE-007, POL-006.
 - SITE-007 = **nowy** sekret PPP poza inwentarzem (H6), playbook `playbooks/site/ppp-secret-add.yml`; zmiana samego hasła nie jest driftem (D6a) i nie ma scenariusza na labie.

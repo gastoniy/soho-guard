@@ -1,6 +1,10 @@
 ---
-# Odczyt menu RouterOS do pliku JSON (H5: wynik scenariusza własnym kanałem harnessu).
-# Wejście: read_path (np. "ip socks"), read_out (ścieżka pliku wynikowego na hoście).
+# Odczyt menu RouterOS do pliku JSON (H5): wynik scenariusza i obiekty bramki własnym kanałem harnessu.
+# Wejście: read_paths (lista, np. ["ip socks"]), read_out (plik wynikowy na hoście),
+#          read_raw (domyślnie false). Wynik: {menu: [wiersze]}.
+# read_raw=false: community.routeros.api_info (wartości typowane; wymaga modelu menu dla wersji RouterOS).
+# read_raw=true:  community.routeros.api, zwykły print bez modelu wersji (wartości jako tekst) — bramka,
+#                 bo kolekcja modeluje /user ssh-keys, /certificate, /file dopiero od RouterOS 7.15.
 - name: Odczyt menu RouterOS
   hosts: localhost
   gather_facts: false
@@ -17,15 +21,29 @@
       validate_cert_hostname: false
       ca_path: "{{ router_ca_path }}"
   tasks:
-    - name: Odczyt {{ read_path }}
+    - name: Odczyt menu (api_info)
       community.routeros.api_info:
-        path: "{{ read_path }}"
+        path: "{{ item }}"
         hide_defaults: false
-      register: harness_read
+      loop: "{{ read_paths }}"
+      register: harness_read_info
+      when: not (read_raw | default(false) | bool)
+      no_log: "{{ harness_no_log }}"
+
+    - name: Odczyt menu (print)
+      community.routeros.api:
+        path: "{{ item }}"
+      loop: "{{ read_paths }}"
+      register: harness_read_raw
+      when: read_raw | default(false) | bool
       no_log: "{{ harness_no_log }}"
 
     - name: Zapis odczytu do JSON
+      vars:
+        harness_rows: "{{ harness_read_raw.results | map(attribute='msg') | list
+                          if (read_raw | default(false) | bool)
+                          else harness_read_info.results | map(attribute='result') | list }}"
       ansible.builtin.copy:
-        content: "{{ harness_read.result | to_json }}"
+        content: "{{ dict(read_paths | zip(harness_rows)) | to_json }}"
         dest: "{{ read_out }}"
         mode: "0600"

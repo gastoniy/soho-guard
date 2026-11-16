@@ -98,7 +98,8 @@ def cmd_run(args, ctx: Context) -> int:
             log.info("przebieg %s: %s [%d/%d], seed=%s", run_id, args.manifest, i, args.repeat,
                      ctx.seed)
             res = run_scenario(ctx, args.manifest, target=args.target, offset_s=args.offset,
-                               close_artifacts=args.close_artifacts, run_id=run_id)
+                               close_artifacts=args.close_artifacts, run_id=run_id,
+                               gen_index=i - 1)
             res["repeat"] = {"index": i, "of": args.repeat}
             path = write(res, ctx.cfg.results_dir)
         m = res.get("metrics") or {}

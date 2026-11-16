@@ -1,0 +1,9 @@
+# Iteracja 4 — DYN-011a (ścieżka szybka, rozbieżność L1 vs L2) ×3 na r1.
+# Każde powtórzenie bierze kolejny adres c2-lab z puli endpointu (H8: inny cel).
+# Teardown każdego przebiegu: pełny reset r1 + czekanie na rozwiązanie findingu (okno 60 min).
+# Bez reset_at_start — pierwszy przebieg startuje z baseline (bramka przed apply to weryfikuje).
+campaign_id: dyn-011a
+description: "DYN-011a ×3 na r1 — rozbieżność L1 vs L2, inny cel c2-lab na przebieg"
+close_artifacts: true
+steps:
+  - { manifest: scenarios/dynamic/dynamic-c2-divergence.yml, target: r1, repeat: 3 }

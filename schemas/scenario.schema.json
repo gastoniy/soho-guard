@@ -53,7 +53,7 @@
       "additionalProperties": false,
       "required": ["from", "to_endpoint", "behavior"],
       "properties": {
-        "from": { "enum": ["kali", "client", "other-router"] },
+        "from": { "enum": ["kali", "client", "other-router", "router"] },
         "to_endpoint": { "$ref": "common.schema.json#/$defs/identifier" },
         "behavior": { "type": "string", "maxLength": 80 },
         "t0_marker": { "type": "boolean" }

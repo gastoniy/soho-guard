@@ -1,0 +1,54 @@
+---
+# DYN-011a (D-E): ukryty kanał C2 emulowany pingiem z samego routera do c2-lab.
+# apply: reguła /ip firewall raw chain=output action=notrack dla ICMP do {{ covert_target }} —
+#   wyłącza śledzenie połączeń (NAT/conntrack) dla tego ruchu, więc nie widać go w L1 (self-report
+#   agenta), a widać w L2 (mirror → Zeek). Sam ruch (ping) uruchamia harness krokiem generate.
+# revert (--tags revert): usunięcie reguły po komentarzu (pełny reset i tak przywraca baseline;
+#   revert jest obroną, gdyby resetu nie było).
+# Efekt uboczny: reguła zostaje w konfiguracji → agent zgłasza local.drift.firewall-raw
+#   (prawdziwy implant nie zostawiłby śladu; opisane w wyniku i w pracy).
+# covert_target wstrzykuje harness (adres z puli endpointu c2-lab w harness.yml).
+- name: DYN-011a — ukryty kanał ICMP (raw notrack)
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/router.yml
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ router_host }}"
+      port: "{{ router_api_port }}"
+      username: "{{ routeros_user }}"
+      password: "{{ routeros_password }}"
+      tls: true
+      validate_certs: true
+      validate_cert_hostname: false
+      ca_path: "{{ router_ca_path }}"
+  vars:
+    covert_comment: "harness-DYN-011a"
+  tasks:
+    - name: apply — reguła raw notrack dla ICMP do c2-lab
+      community.routeros.api:
+        path: ip firewall raw
+        add: >-
+          chain=output action=notrack protocol=icmp
+          dst-address={{ covert_target }}
+          comment={{ covert_comment }}
+      no_log: "{{ harness_no_log }}"
+      tags: [apply]
+
+    - name: revert — znajdź reguły raw harnessu
+      community.routeros.api:
+        path: ip firewall raw
+        query: ".id comment WHERE comment == {{ covert_comment }}"
+      register: covert_found
+      no_log: "{{ harness_no_log }}"
+      tags: [revert, never]
+
+    - name: revert — usuń reguły raw harnessu
+      community.routeros.api:
+        path: ip firewall raw
+        remove: "{{ item['.id'] }}"
+      # select('mapping'): wiersze wyniku (bez komunikatu "no results"), jak w SITE-008.
+      loop: "{{ covert_found.msg | select('mapping') | list }}"
+      no_log: "{{ harness_no_log }}"
+      tags: [revert, never]

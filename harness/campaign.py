@@ -100,6 +100,13 @@ def load_plan(path: Path, cfg) -> dict:
             check_offset(float(offset), cfg.timing)
         if not m["expect"]["detected"] and m["class"] not in cfg.windows:
             raise UsageError(f"{where}: brak windows.{m['class']} w harness.yml (H10)")
+        if "generate" in m:
+            cfg.endpoint(m["generate"]["to_endpoint"])        # pula adresów (krok generate)
+            if (m.get("teardown") or {}).get("reset"):        # teardown dynamiczny = pełny reset
+                rc = cfg.router(target)
+                if not rc.upload or cfg.build_dir is None or cfg.ssh_known_hosts is None:
+                    raise UsageError(f"{where}: teardown {target} (pełny reset) wymaga w harness.yml "
+                                     f"build_dir, ssh.known_hosts i routers.{target}.upload")
         steps.append({"index": i, "manifest_path": mpath, "manifest": str(st["manifest"]),
                       "id": m["id"], "class": m["class"], "target": target,
                       "repeat": repeat, "offset": None if offset is None else float(offset)})
@@ -206,7 +213,8 @@ def run_campaign(ctx, plan: dict, run_id: str) -> dict:
                              total, st["index"], st["id"], st["target"], i, st["repeat"])
                     res = run_scenario(ctx, st["manifest_path"], target=st["target"],
                                        offset_s=st["offset"],
-                                       close_artifacts=plan["close_artifacts"], run_id=rid)
+                                       close_artifacts=plan["close_artifacts"], run_id=rid,
+                                       gen_index=i - 1)
                     res["campaign"] = {"id": plan["campaign_id"], "run_id": run_id,
                                        "step": st["index"], "index": i, "of": st["repeat"]}
                     res["repeat"] = {"index": i, "of": st["repeat"]}

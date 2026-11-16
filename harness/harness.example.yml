@@ -41,6 +41,10 @@ timing:
   mgmt_poll_s: 10
   ssh_retry_s: 150
   ssh_ready_timeout_s: 600
+  resolve_timeout_s: 5400                     # dynamic: czekanie na rozwiązanie findingu po resecie
+endpoints:                                    # krok generate: endpoint → pula adresów (c2-lab na Kali)
+  c2-lab:                                     # DYN-011a: kolejne powtórzenia biorą kolejny adres (H8)
+    addresses: [192.0.2.60, 192.0.2.61, 192.0.2.62]
 routers:
   r1:
     mgmt_address: 192.0.2.1

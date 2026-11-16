@@ -24,7 +24,7 @@ from harness import __main__ as cli
 from harness import campaign as campaign_mod
 from harness import config as config_mod
 from harness import summary as summary_mod
-from harness import artifacts, gate, probes, reset, results, scenario, sitelab, timing
+from harness import artifacts, gate, generate, probes, reset, results, scenario, sitelab, timing
 from harness.config import Config, RouterCfg, TimingCfg
 from harness.router import Ansible, Ssh
 from harness.scenario import Context, run_scenario
@@ -97,6 +97,7 @@ class FakeAnsible:
         self.api_disabled = True
         self.winbox_address = "192.0.2.0/24"
         self.users: list[str] = []
+        self.covert = None               # DYN-011a: cel reguły raw notrack (None = brak)
         self.extras: list[tuple[str, dict | None]] = []     # (tag, extra) wywołań playbooków
         self.extra_user = False          # obiekt spoza wzorca bramki
         self.export_extra: list[str] = []
@@ -170,6 +171,8 @@ class FakeAnsible:
                 self.users.append(probes.SITE008_USER)
             else:
                 self.users = [n for n in self.users if n != probes.SITE008_USER]
+        elif name == "covert-icmp":
+            self.covert = (extra or {}).get("covert_target") if apply else None
         else:
             raise AssertionError(playbook)
         if tags == "revert" and self.leave_after_revert:
@@ -181,6 +184,13 @@ class FakeSsh:
 
     def __init__(self, ans: FakeAnsible):
         self.ans = ans
+        self.runs: list[str] = []        # zdalne polecenia (generate: :execute, :put …)
+
+    def run(self, router, remote, opts=(), timeout=None, input=None, check=True):
+        self.ans.calls.append("ssh")
+        self.runs.append(remote)
+        out = "1\n" if remote.startswith(":put") else ""
+        return subprocess.CompletedProcess([remote], 0, out, "")
 
     def export(self, router):
         body = EXPORT_PATTERN.split("\n", 3)[3]
@@ -343,7 +353,8 @@ def test_pol003_pass(lab):
                                "policy_deployed": "v0.7.1-lab"}
     assert res["target"] == {"router_id": "r2", "manifest_router_id": "r2",
                              "target_override": False, "profile": "ros6"}
-    assert res["teardown"] == {"ok": True, "revert": "ok", "error": None,
+    assert res["teardown"] == {"ok": True, "revert": "ok", "error": None, "reset": None,
+                               "resolved": None,
                                "gate": {"ok": True, "export_diff": [], "objects_diff": []}}
     assert res["gate_before"]["ok"] is True
     assert res["preconditions"]["ok"] is True
@@ -1881,3 +1892,152 @@ def test_summary_collects_campaign_and_writes_csv(lab, tmp_path):
     assert cli.main(["summary", str(rd), "--csv", str(out)]) == cli.EXIT_OK
     lines = out.read_text().splitlines()
     assert lines[0].startswith("run_id,campaign,manifest_id") and len(lines) == 3
+
+
+# ================================================================ DYN-011a (iteracja 4)
+DYN011A = REPO_ROOT / "scenarios" / "dynamic" / "dynamic-c2-divergence.yml"
+DIV_RULE = "integrity.divergence.connections"
+DRIFT_RULE = "local.drift.firewall-raw"
+
+
+def dyn_report(rule, first_seen, run_id, seq, posture, rule_source, phase, action):
+    rep = copy.deepcopy(json.loads((EX / "report-policy-violation.json").read_text(encoding="utf-8")))
+    rep["run"].update(run_id=run_id, run_seq=seq, agent_version="0.7.1")
+    rep["verdict"]["posture"] = posture
+    f = rep["findings"][0]
+    f.update(rule=rule, status="new", rule_source=rule_source, phase=phase,
+             first_seen_at=ts(first_seen), fingerprint=f"sha256:{run_id}")
+    rep["findings"] = rep["findings"][:1]
+    rep["actions"] = [{"action_id": "a1", "fingerprint": f["fingerprint"], "type": action,
+                       "status": "succeeded", "finished_at": ts(first_seen + timedelta(seconds=2)),
+                       "verification": None}]
+    return rep
+
+
+def dyn_cfg(tmp_path, clone, addresses=("192.0.2.60", "192.0.2.61", "192.0.2.62"), **timing_over):
+    cfg = make_cfg(tmp_path, clone, **timing_over)
+    return Config(**{**cfg.__dict__, "endpoints": {"c2-lab": tuple(addresses)}})
+
+
+def dyn_ctx(tmp_path, github=None, **timing_over):
+    repo = SiteRepo(tmp_path, state_doc())
+    repo.commit_state(state_doc(router_id="r1"), T_START - timedelta(minutes=20), "r1 init",
+                      router="r1")
+    clock = FakeClock(T_START)
+    ans = FakeAnsible()
+    cfg = dyn_cfg(tmp_path, repo.clone, **timing_over)
+    ctx = Context(cfg=cfg, ansible=ans, site=sitelab.SiteLab(repo.clone), clock=clock,
+                  rng=random.Random(1), ssh=FakeSsh(ans), github=github)
+    return repo, clock, ans, ctx
+
+
+def test_dyn011a_pass(tmp_path, monkeypatch):
+    gh = FakeGitHub()
+    repo, clock, ans, ctx = dyn_ctx(tmp_path, github=gh)
+    # pełny reset w teardownie — atrapa (pełna maszyneria resetu ma własne testy)
+    monkeypatch.setattr(scenario, "run_reset", lambda c, rid, run_id: {
+        "ok": True, "error": None, "interrupted": False,
+        "gate": {"ok": True, "export_diff": [], "objects_diff": []}})
+    monkeypatch.setattr(scenario, "write_reset", lambda res, d: Path("reset.json"))
+
+    t0 = T_START + timedelta(seconds=40)           # grid 10:00:00 + offset 100 = 10:01:40
+    drift_at = t0 + timedelta(seconds=160)
+    div_at = t0 + timedelta(seconds=1800)
+    resolved_at = div_at + timedelta(seconds=300)
+    drift_rid, div_rid = "01M7DRIFT0000000000000000", "01M7DIVERG0000000000000AB"
+
+    def fire_drift():
+        st = state_doc(router_id="r1", posture="site-drift",
+                       open_findings=[{"rule": DRIFT_RULE, "fingerprint": "sha256:d"}])
+        repo.commit_state(st, drift_at, "agent(r1): drift", router="r1",
+                          report=dyn_report(DRIFT_RULE, drift_at, drift_rid, 7, "site-drift",
+                                            "local", "static", "open-pr"))
+
+    def fire_div():
+        st = state_doc(router_id="r1", posture="compromise-suspected",
+                       open_findings=[{"rule": DIV_RULE, "fingerprint": f"sha256:{div_rid}"}])
+        repo.commit_state(st, div_at, "agent(r1): divergence", router="r1",
+                          report=dyn_report(DIV_RULE, div_at, div_rid, 9, "compromise-suspected",
+                                            "universal", "dynamic", "alert"))
+
+    def fire_resolved():
+        repo.commit_state(state_doc(router_id="r1"), resolved_at, "agent(r1): resolved", router="r1")
+
+    clock.at(drift_at, fire_drift)
+    clock.at(div_at, fire_div)
+    clock.at(resolved_at, fire_resolved)
+    gh.prs[f"agent/r1/{drift_rid}"] = [{"number": 51, "state": "OPEN",
+                                        "headRefName": f"agent/r1/{drift_rid}"}]
+    gh.issues = [{"number": 77, "state": "OPEN",
+                  "body": f"reports/r1/2026/11/000009-{div_rid}.json"}]
+
+    res = run_scenario(ctx, DYN011A, target="r1", offset_s=100, close_artifacts=True)
+
+    assert res["verdict"] == "pass", res["reasons"]
+    assert res["generate"]["from"] == "router"
+    assert res["generate"]["target"] == "192.0.2.60"             # gen_index 0 → pierwszy adres
+    assert res["timing"]["t0"] == ts(t0)
+    assert res["metrics"]["mttd_s"] == 1800.0
+    assert ans.covert is None                                    # revert usunął regułę raw
+    assert any(r.startswith(":execute") and "count=1200" in r for r in ctx.ssh.runs)
+    # efekt uboczny zapisany, nie zmienia werdyktu
+    assert res["side_effects"] == [{"rule": DRIFT_RULE,
+                                    "report": f"reports/r1/2026/11/000007-{drift_rid}.json"}]
+    # teardown: pełny reset + rozwiązanie findingu
+    assert res["teardown"]["reset"]["ok"] is True
+    assert res["teardown"]["resolved"]["ok"] is True
+    assert res["teardown"]["ok"] is True
+    # H9: zamknięty PR driftu i issue rozbieżności
+    assert {("pr", 51), ("issue", 77)} == {(k, n) for k, n, _ in gh.closed}
+
+
+def test_dyn011a_resolve_timeout(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = dyn_ctx(tmp_path, resolve_timeout_s=600)
+    monkeypatch.setattr(scenario, "run_reset", lambda c, rid, run_id: {
+        "ok": True, "error": None, "interrupted": False,
+        "gate": {"ok": True, "export_diff": [], "objects_diff": []}})
+    monkeypatch.setattr(scenario, "write_reset", lambda res, d: Path("reset.json"))
+    t0 = T_START + timedelta(seconds=40)
+    div_at = t0 + timedelta(seconds=1800)
+
+    def fire_div():
+        st = state_doc(router_id="r1", posture="compromise-suspected",
+                       open_findings=[{"rule": DIV_RULE, "fingerprint": "sha256:x"}])
+        repo.commit_state(st, div_at, "agent(r1): divergence", router="r1",
+                          report=dyn_report(DIV_RULE, div_at, "01M7DIV2", 9, "compromise-suspected",
+                                            "universal", "dynamic", "alert"))
+    clock.at(div_at, fire_div)
+    res = run_scenario(ctx, DYN011A, target="r1", offset_s=100)      # finding nigdy nie znika
+    assert res["verdict"] == "pass"                 # sam scenariusz ok
+    assert res["teardown"]["resolved"]["ok"] is False
+    assert res["teardown"]["ok"] is False
+    assert "nierozwiązany" in res["teardown"]["error"]
+
+
+def test_generate_pick_target_round_robin(tmp_path):
+    cfg = dyn_cfg(tmp_path, tmp_path)
+    assert [generate.pick_target(cfg, "c2-lab", i) for i in range(4)] == \
+        ["192.0.2.60", "192.0.2.61", "192.0.2.62", "192.0.2.60"]
+    with pytest.raises(UsageError, match="endpoints.nieznany"):
+        generate.pick_target(cfg, "nieznany", 0)
+
+
+def test_generate_router_requires_job(tmp_path):
+    repo, clock, ans, ctx = dyn_ctx(tmp_path)
+    ctx.ssh.run = lambda *a, **k: subprocess.CompletedProcess(["x"], 0, "0\n", "")
+    with pytest.raises(HarnessError, match="ping nie wystartował"):
+        generate.run_generate(ctx, {"id": "DYN-011a", "generate":
+                              {"from": "router", "to_endpoint": "c2-lab", "behavior": "x"}},
+                              ctx.cfg.router("r1"), "192.0.2.60")
+
+
+def test_config_endpoints_parsed(tmp_path):
+    doc = yaml.safe_load((REPO_ROOT / "harness" / "harness.example.yml").read_text(encoding="utf-8"))
+    p = tmp_path / "harness.yml"
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    cfg = config_mod.load(p)
+    assert cfg.endpoint("c2-lab") == ("192.0.2.60", "192.0.2.61", "192.0.2.62")
+    doc["endpoints"] = {"c2-lab": {"addresses": []}}
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(UsageError, match="addresses"):
+        config_mod.load(p)

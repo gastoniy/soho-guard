@@ -46,6 +46,7 @@ class TimingCfg:
     mgmt_poll_s: int = 10           # odpytywanie routera po resecie
     ssh_retry_s: int = 150          # RouterOS 6: każda próba SSH restartuje generowanie klucza hosta
     ssh_ready_timeout_s: int = 600  # gotowość SSH liczona od powrotu api-ssl
+    resolve_timeout_s: int = 5400   # dynamic: czekanie na rozwiązanie findingu po pełnym resecie (okno 60 min + cykle)
 
 
 @dataclass(frozen=True)
@@ -82,12 +83,21 @@ class Config:
     scp_bin: str = "scp"
     keygen_bin: str = "ssh-keygen"
     gh_bin: str = "gh"
+    # krok ruchowy (generate): endpoint → pula adresów (np. c2-lab na Kali); kolejne powtórzenia
+    # biorą kolejny adres (H8: inny cel). Same adresy, nigdy w repo (harness.yml jest w .gitignore).
+    endpoints: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def router(self, router_id: str) -> RouterCfg:
         try:
             return self.routers[router_id]
         except KeyError:
             raise UsageError(f"router '{router_id}' nieobecny w {self.path} (routers:)") from None
+
+    def endpoint(self, name: str) -> tuple[str, ...]:
+        addrs = self.endpoints.get(name)
+        if not addrs:
+            raise UsageError(f"harness.yml: brak endpoints.{name}.addresses (krok generate)")
+        return addrs
 
 
 def _p(v: str, base: Path) -> Path:
@@ -181,6 +191,14 @@ def load(path: Path) -> Config:
     if unknown:
         raise UsageError(f"harness.yml: nieznane klucze windows: {unknown}")
     windows.update({k: int(v) for k, v in w.items()})
+
+    endpoints = {}
+    for name, ep in (doc.get("endpoints") or {}).items():
+        addrs = (ep or {}).get("addresses")
+        if not isinstance(addrs, list) or not addrs or any(not isinstance(a, str) for a in addrs):
+            raise UsageError(f"harness.yml: endpoints.{name}.addresses musi być niepustą listą adresów")
+        endpoints[str(name)] = tuple(str(a) for a in addrs)
+
     ssh = _req(doc, "ssh", "")
 
     return Config(
@@ -206,4 +224,5 @@ def load(path: Path) -> Config:
         results_dir=_p(doc.get("results_dir", REPO_ROOT / "harness" / "results"), base),
         routers=routers,
         timing=timing,
+        endpoints=endpoints,
     )

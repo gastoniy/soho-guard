@@ -3,8 +3,9 @@ albo `harness/harness.yml` w repo, objęty `.gitignore`); wzorzec: `harness/harn
 
 Plik zawiera wyłącznie adresy i ścieżki — nigdy wartości sekretów. Sekrety trafiają do Ansible
 przez `-e @<plik Vault>` i `--vault-password-file`; harness ich nie odczytuje.
-Klucze nieznane w tej iteracji (np. pliki do wgrania przed resetem) są pomijane; nieznane klucze
-w sekcjach `timing`, `windows` i `artifacts` są błędem.
+Nieznane klucze w sekcjach `timing`, `windows` i `artifacts` są błędem. Pełny reset (H4) wymaga
+dodatkowo `build_dir`, `ssh.known_hosts` i per router `upload` (plik lokalny → stała nazwa na routerze);
+harness sprawdza tylko istnienie tych plików, treść czyta wyłącznie `scp`.
 """
 from __future__ import annotations
 
@@ -27,6 +28,9 @@ class RouterCfg:
     vault_file: Path
     api_port: int = 8729
     mgmt_return_timeout_s: int = 300
+    # pełny reset: nazwa na routerze (stała, importuje ją baseline.rsc.j2) → plik lokalny;
+    # baseline.rsc nie występuje — harness renderuje go sam
+    upload: dict[str, Path] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,10 @@ class TimingCfg:
     report_grace_s: int = 120       # po budżecie MTTD: publikacja raportu i push
     precondition_wait_s: int = 900  # H8: czekanie na spełnienie warunków wstępnych (np. przy --repeat)
     heartbeat_lead_s: int = 720     # H10: apply ok. 12 min przed przewidywanym heartbeatem
+    reset_offset_s: int = 40        # H4: pełny reset po odczycie L1 (kalibracja: :X0+40 s)
+    mgmt_poll_s: int = 10           # odpytywanie routera po resecie
+    ssh_retry_s: int = 150          # RouterOS 6: każda próba SSH restartuje generowanie klucza hosta
+    ssh_ready_timeout_s: int = 600  # gotowość SSH liczona od powrotu api-ssl
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,8 @@ class Config:
     results_dir: Path
     routers: dict[str, RouterCfg]
     ssh_config: Path | None = None
+    ssh_known_hosts: Path | None = None     # osobny known_hosts harnessu (H4)
+    build_dir: Path | None = None           # wyrenderowany baseline (usuwany zaraz po wgraniu)
     timing: TimingCfg = field(default_factory=TimingCfg)
     artifacts: ArtifactsCfg = field(default_factory=ArtifactsCfg)
     windows: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_WINDOWS))
@@ -69,6 +79,8 @@ class Config:
     ansible_timeout_s: int = 300
     ssh_bin: str = "ssh"
     ssh_timeout_s: int = 120
+    scp_bin: str = "scp"
+    keygen_bin: str = "ssh-keygen"
     gh_bin: str = "gh"
 
     def router(self, router_id: str) -> RouterCfg:
@@ -97,6 +109,30 @@ def _section(doc: dict, name: str, cls):
     return cls(**{k: int(v) for k, v in sec.items()})
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader odrzucający zduplikowane klucze (PyYAML domyślnie bierze ostatni bez ostrzeżenia,
+    np. drugi blok `routers:` po cichu zastępuje pierwszy)."""
+
+
+def _construct_mapping(loader, node, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"zduplikowany klucz '{key}'", key_node.start_mark)
+        seen.add(key)
+    return loader.construct_mapping(node, deep=deep)
+
+
+_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
+
+
+def load_yaml_unique(text: str):
+    """yaml.safe_load z odrzucaniem zduplikowanych kluczy (harness.yml, plany kampanii)."""
+    return yaml.load(text, Loader=_UniqueKeyLoader)
+
+
 def resolve_path(cli_path: str | None) -> Path:
     raw = cli_path or os.environ.get(ENV_VAR) or str(DEFAULT_PATH)
     return Path(os.path.expanduser(raw))
@@ -104,7 +140,7 @@ def resolve_path(cli_path: str | None) -> Path:
 
 def load(path: Path) -> Config:
     try:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        doc = load_yaml_unique(path.read_text(encoding="utf-8"))
     except OSError as e:
         raise UsageError(f"nie można odczytać konfiguracji {path}: {e}") from None
     except yaml.YAMLError as e:
@@ -122,12 +158,18 @@ def load(path: Path) -> Config:
     routers = {}
     for rid, r in routers_doc.items():
         w = f"routers.{rid}."
+        up = r.get("upload") or {}
+        if not isinstance(up, dict) or any(not isinstance(k, str) or "/" in k for k in up):
+            raise UsageError(f"harness.yml: {w}upload musi być mapą <nazwa na routerze>: <plik>")
+        if "baseline.rsc" in up:
+            raise UsageError(f"harness.yml: {w}upload: baseline.rsc renderuje harness — usuń wpis")
         routers[rid] = RouterCfg(
             router_id=rid,
             mgmt_address=str(_req(r, "mgmt_address", w)),
             vault_file=_p(_req(r, "vault_file", w), base),
             api_port=int(r.get("api_port", 8729)),
             mgmt_return_timeout_s=int(r.get("mgmt_return_timeout_s", 300)),
+            upload={k: _p(v, base) for k, v in up.items()},
         )
 
     timing = _section(doc, "timing", TimingCfg)
@@ -154,6 +196,10 @@ def load(path: Path) -> Config:
         ssh_config=_p(_req(ssh, "config", "ssh."), base),
         ssh_bin=str(ssh.get("bin", "ssh")),
         ssh_timeout_s=int(ssh.get("timeout_s", 120)),
+        ssh_known_hosts=_p(ssh["known_hosts"], base) if ssh.get("known_hosts") else None,
+        scp_bin=str(ssh.get("scp_bin", "scp")),
+        keygen_bin=str(ssh.get("keygen_bin", "ssh-keygen")),
+        build_dir=_p(doc["build_dir"], base) if doc.get("build_dir") else None,
         gh_bin=str((doc.get("github") or {}).get("bin", "gh")),
         artifacts=_section(doc, "artifacts", ArtifactsCfg),
         windows=windows,

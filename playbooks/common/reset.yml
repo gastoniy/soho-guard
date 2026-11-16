@@ -1,0 +1,84 @@
+---
+# Pełny reset (H4) — część po stronie Ansible; całość prowadzi harness/reset.py.
+#
+# --tags prepare: render baseline.rsc z szablonu site-lab (commit = baseline_rev) i danych Vault,
+#                 wgranie go razem z plikami z harness.yml (upload) pod stałymi nazwami (scp -O,
+#                 konto ansible), a w `always` usunięcie wyrenderowanego pliku z hosta (shred),
+#                 także po błędzie.
+#   Wejście: reset_template, reset_host_vars (pliki z site-lab wypakowane przez harness),
+#            reset_rendered (plik w build_dir), reset_uploads (lista {src, dst}), baseline_rev,
+#            ssh_config, scp_bin, router_account.
+# --tags cleanup: usunięcie z routera plików resetu (reset_names), gdy reset się nie odbył
+#                 — wyrenderowany baseline zawiera hasła i nie może zostać na routerze.
+# Polecenie resetu (SSH), powrót MGMT, known_hosts i bramkę wykonuje harness.
+- name: Pełny reset — przygotowanie i sprzątanie
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/router.yml
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ router_host }}"
+      port: "{{ router_api_port }}"
+      username: "{{ routeros_user }}"
+      password: "{{ routeros_password }}"
+      tls: true
+      validate_certs: true
+      validate_cert_hostname: false
+      ca_path: "{{ router_ca_path }}"
+  tasks:
+    - name: prepare — render i wgranie
+      tags: [prepare, never]
+      block:
+        - name: Dane instalacji routera (host_vars.yml z site-lab)
+          ansible.builtin.include_vars:
+            file: "{{ reset_host_vars }}"
+          no_log: true
+
+        - name: Render baseline.rsc (hasła z Vault)
+          ansible.builtin.template:
+            src: "{{ reset_template }}"
+            dest: "{{ reset_rendered }}"
+            mode: "0600"
+          no_log: true
+
+        - name: Wgranie plików pod stałymi nazwami (scp -O)
+          ansible.builtin.command:
+            argv:
+              - "{{ scp_bin }}"
+              - "-O"
+              - "-q"
+              - "-F"
+              - "{{ ssh_config }}"
+              - "-o"
+              - "BatchMode=yes"
+              - "{{ item.src }}"
+              - "{{ router_account }}@{{ router_host }}:{{ item.dst }}"
+          loop: "{{ [{'src': reset_rendered, 'dst': 'baseline.rsc'}] + reset_uploads }}"
+          loop_control:
+            label: "{{ item.dst }}"
+          changed_when: true
+      always:
+        - name: Usunięcie wyrenderowanego baseline z hosta (shred)
+          ansible.builtin.command:
+            argv: [shred, -u, "{{ reset_rendered }}"]
+            removes: "{{ reset_rendered }}"
+          changed_when: true
+
+    - name: cleanup — pliki resetu na routerze
+      tags: [cleanup, never]
+      block:
+        - name: Lista plików
+          community.routeros.api:
+            path: file
+          register: reset_files
+          no_log: "{{ harness_no_log }}"
+
+        - name: Usunięcie plików resetu
+          community.routeros.api:
+            path: file
+            remove: "{{ item['.id'] }}"
+          loop: "{{ reset_files.msg | select('mapping') | selectattr('name', 'in', reset_names) | list }}"
+          loop_control:
+            label: "{{ item.name }}"
+          no_log: "{{ harness_no_log }}"

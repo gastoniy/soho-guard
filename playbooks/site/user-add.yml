@@ -1,0 +1,49 @@
+---
+# SITE-008: nowy użytkownik RouterOS spoza inwentarza → drift lokalny local.drift.users.
+# apply: /user add (grupa read, konto wyłączone, hasło losowane przy każdym przebiegu, nigdzie
+# niezapisywane — no_log); revert (--tags revert): usunięcie użytkownika o tej nazwie.
+# Nazwa zgodna z harness/probes.py (SITE008_USER).
+- name: SITE-008 — nowy użytkownik poza inwentarzem
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/router.yml
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ router_host }}"
+      port: "{{ router_api_port }}"
+      username: "{{ routeros_user }}"
+      password: "{{ routeros_password }}"
+      tls: true
+      validate_certs: true
+      validate_cert_hostname: false
+      ca_path: "{{ router_ca_path }}"
+  vars:
+    site008_name: harness-site-008
+  tasks:
+    - name: apply — dodaj /user
+      community.routeros.api:
+        path: user
+        add: >-
+          name={{ site008_name }}
+          password={{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}
+          group=read disabled=yes comment=harness-SITE-008
+      no_log: true
+      tags: [apply]
+
+    - name: revert — znajdź użytkownika
+      community.routeros.api:
+        path: user
+        query: ".id name WHERE name == {{ site008_name }}"
+      register: site008_found
+      no_log: "{{ harness_no_log }}"
+      tags: [revert, never]
+
+    - name: revert — usuń użytkownika
+      community.routeros.api:
+        path: user
+        remove: "{{ item['.id'] }}"
+      # select('mapping'): wiersze wyniku (bez komunikatu "no results"), jak w SITE-007.
+      loop: "{{ site008_found.msg | select('mapping') | list }}"
+      no_log: "{{ harness_no_log }}"
+      tags: [revert, never]

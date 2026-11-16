@@ -1,0 +1,21 @@
+schema_version: "1.0.0"
+id: SITE-008
+title: "Nowy użytkownik RouterOS poza inwentarzem na R1 (drift lokalny)"
+class: site
+attack:
+  attck: ["T1136.001"]
+  timeline_ref: "konto trwałego dostępu dodane po przejęciu routera"
+target: { router_id: r1, profile: ros7 }
+apply:
+  playbook: playbooks/site/user-add.yml
+expect:
+  detected: true
+  phase: static
+  rule: local.drift.users
+  rule_source: local
+  posture: site-drift
+  action: pr-alert
+  end_state: unchanged
+  # Budżet POL/SITE: cykl 300 s + odczyt L1 + zapas (decyzja 2026-11-12).
+  max_detection_time_s: 420
+teardown: { reset: true }

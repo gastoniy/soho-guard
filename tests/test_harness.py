@@ -21,8 +21,10 @@ import yaml
 
 from harness import REPO_ROOT, HarnessError, UsageError
 from harness import __main__ as cli
+from harness import campaign as campaign_mod
 from harness import config as config_mod
-from harness import artifacts, gate, probes, results, scenario, sitelab, timing
+from harness import summary as summary_mod
+from harness import artifacts, gate, probes, reset, results, scenario, sitelab, timing
 from harness.config import Config, RouterCfg, TimingCfg
 from harness.router import Ansible, Ssh
 from harness.scenario import Context, run_scenario
@@ -91,6 +93,11 @@ class FakeAnsible:
         self.enabled = enabled
         self.icmp_comment = probes.BEN002_COMMENT_BASELINE
         self.ppp: list[str] = []
+        self.proxy = False
+        self.api_disabled = True
+        self.winbox_address = "192.0.2.0/24"
+        self.users: list[str] = []
+        self.extras: list[tuple[str, dict | None]] = []     # (tag, extra) wywołań playbooków
         self.extra_user = False          # obiekt spoza wzorca bramki
         self.export_extra: list[str] = []
         self.leave_after_revert = False  # revert „zapomina” o zmianie → bramka po teardownie
@@ -109,6 +116,18 @@ class FakeAnsible:
         if path == "ppp secret":
             return [{".id": "*1", "name": n, "service": "any", "password": "S3cr3tValue"}
                     for n in self.ppp]
+        if path == "ip proxy":
+            return [{"enabled": self.proxy, "port": 8080}]
+        if path == "ip service":
+            rows = [{"name": "api", "disabled": self.api_disabled, "port": 8728},
+                    {"name": "api-ssl", "disabled": False, "port": 8729},
+                    {"name": "winbox", "disabled": False, "port": 8291}]
+            if self.winbox_address:          # RouterOS pomija puste pole
+                rows[2]["address"] = self.winbox_address
+            return rows
+        if path == "user":
+            return [{"name": "ansible", "group": "bl-ansible"}] + \
+                [{"name": n, "group": "read", "disabled": True} for n in self.users]
         raise AssertionError(path)
 
     def read_many(self, router, paths, raw=False):
@@ -123,6 +142,7 @@ class FakeAnsible:
 
     def playbook(self, playbook, router, tags=None, extra=None):
         self.calls.append(tags)
+        self.extras.append((tags, extra))
         if tags in self.fail_tags:
             raise HarnessError(f"{playbook} [{tags}]: kod 2")
         if tags == "apply" and not self.apply_effect:
@@ -139,6 +159,17 @@ class FakeAnsible:
                 self.ppp.append(probes.SITE007_SECRET)
             else:
                 self.ppp = [n for n in self.ppp if n != probes.SITE007_SECRET]
+        elif name == "proxy-enabled":
+            self.proxy = apply
+        elif name == "api-plain-enabled":
+            self.api_disabled = not apply
+        elif name == "winbox-public":
+            self.winbox_address = "" if apply else extra["probe_pre"]["address"]
+        elif name == "user-add":
+            if apply:
+                self.users.append(probes.SITE008_USER)
+            else:
+                self.users = [n for n in self.users if n != probes.SITE008_USER]
         else:
             raise AssertionError(playbook)
         if tags == "revert" and self.leave_after_revert:
@@ -594,7 +625,8 @@ def test_ansible_failure_is_harness_error(tmp_path):
 
 
 SCENARIO_PLAYBOOKS = ["policy/socks-enabled.yml", "benign/add-allowed-firewall-comment.yml",
-                      "site/ppp-secret-add.yml"]
+                      "site/ppp-secret-add.yml", "policy/proxy-enabled.yml",
+                      "policy/api-plain-enabled.yml", "policy/winbox-public.yml", "site/user-add.yml"]
 
 
 @pytest.mark.parametrize("pb", SCENARIO_PLAYBOOKS)
@@ -608,10 +640,14 @@ def test_playbooks_have_apply_and_revert_tags(pb):
 
 
 def test_scenario_manifests_point_to_existing_playbooks_and_probes():
-    for mp in (POL003, BEN002, SITE007):
+    for mp in sorted((REPO_ROOT / "scenarios").glob("*/*.yml")):
         m = yaml.safe_load(mp.read_text(encoding="utf-8"))
+        if m["class"] in ("dynamic", "control") or m["apply"].get("none"):
+            continue                                   # dynamika: iteracja 4–5; BEN-001 bez odczytu
         assert (REPO_ROOT / m["apply"]["playbook"]).is_file(), m["id"]
-        probes.get(m["id"])
+        probe = probes.get(m["id"])
+        assert m["apply"]["playbook"].removeprefix("playbooks/") in SCENARIO_PLAYBOOKS, m["id"]
+        assert probe.applied is not None, m["id"]
 
 
 def test_probe_constants_match_playbooks():
@@ -622,13 +658,23 @@ def test_probe_constants_match_playbooks():
     tasks = yaml.safe_load(site)[0]["tasks"]
     with_pw = [t for t in tasks if "password=" in json.dumps(t)]
     assert with_pw and all(t["no_log"] is True for t in with_pw)   # zadanie z hasłem zawsze no_log
+    user = (REPO_ROOT / "playbooks/site/user-add.yml").read_text(encoding="utf-8")
+    assert f"site008_name: {probes.SITE008_USER}" in user
+    with_pw = [t for t in yaml.safe_load(user)[0]["tasks"] if "password=" in json.dumps(t)]
+    assert with_pw and all(t["no_log"] is True for t in with_pw)
+    winbox = (REPO_ROOT / "playbooks/policy/winbox-public.yml").read_text(encoding="utf-8")
+    assert "probe_pre.address" in winbox          # revert: adres sprzed apply (zależny od routera)
 
 
 # ---------------------------------------------------------------- konfiguracja
 def test_example_config_loads():
     cfg = config_mod.load(REPO_ROOT / "harness" / "harness.example.yml")
     assert cfg.router("r2").mgmt_address == "192.0.2.2"
-    assert cfg.router("r1").mgmt_return_timeout_s == 300
+    assert cfg.router("r1").mgmt_return_timeout_s == 180
+    assert set(cfg.router("r2").upload) == {"bl-api.crt", "bl-api.key", "ansible_rsa.pub",
+                                            "monitor_rsa.pub"}
+    assert cfg.build_dir is not None and cfg.ssh_known_hosts is not None
+    assert cfg.timing.reset_offset_s == 40
     assert cfg.router("r2").vault_file.is_absolute()
     assert cfg.timing.cycle_s == 300
     with pytest.raises(UsageError):
@@ -640,6 +686,8 @@ def test_example_config_loads():
     (lambda d: d["routers"]["r2"].pop("vault_file"), "routers.r2.vault_file"),
     (lambda d: d["timing"].update(avoid_window_s=400), "avoid_window_s"),
     (lambda d: d["timing"].update(bogus=1), "nieznane"),
+    (lambda d: d["routers"]["r2"]["upload"].update({"baseline.rsc": "/path/x"}), "renderuje"),
+    (lambda d: d["routers"]["r2"].update(upload=["a"]), "upload musi"),
 ])
 def test_config_errors(tmp_path, mutate, needle):
     doc = yaml.safe_load((REPO_ROOT / "harness" / "harness.example.yml").read_text(encoding="utf-8"))
@@ -647,6 +695,15 @@ def test_config_errors(tmp_path, mutate, needle):
     p = tmp_path / "harness.yml"
     p.write_text(yaml.safe_dump(doc), encoding="utf-8")
     with pytest.raises(UsageError, match=needle):
+        config_mod.load(p)
+
+
+def test_config_rejects_duplicate_keys(tmp_path):
+    text = (REPO_ROOT / "harness" / "harness.example.yml").read_text(encoding="utf-8")
+    text += "routers:\n  r1:\n    mgmt_address: 192.0.2.1\n    vault_file: /path/v.yml\n"
+    p = tmp_path / "harness.yml"
+    p.write_text(text, encoding="utf-8")
+    with pytest.raises(UsageError, match="zduplikowany klucz 'routers'"):
         config_mod.load(p)
 
 
@@ -1225,3 +1282,602 @@ def test_site007_revert_loop_does_not_use_dotted_selectattr():
     doc = yaml.safe_load((REPO_ROOT / "playbooks/site/ppp-secret-add.yml").read_text(encoding="utf-8"))
     remove = [t for t in doc[0]["tasks"] if "remove" in t.get("community.routeros.api", {})][0]
     assert "select('mapping')" in remove["loop"] and "selectattr('.id'" not in remove["loop"]
+
+
+
+# ---------------------------------------------------------------- pełny reset (H4)
+TEMPLATE_R2 = """{%- macro ros(s) -%}{{ s }}{%- endmacro -%}
+# Harness wgrywa PRZED resetem:
+#   baseline.rsc  bl-api.crt  bl-api.key  ansible_rsa.pub  monitor_rsa.pub
+#   (komentarz) import file-name=commented.txt
+:delay 15s
+/certificate
+import file-name=bl-api.crt passphrase=""
+import file-name=bl-api.key passphrase="{{ ros(bl_api_key_pass) }}"
+/user ssh-keys
+import public-key-file=ansible_rsa.pub user=ansible
+import public-key-file=monitor_rsa.pub user=monitor
+:do { /file remove [find where name="baseline.rsc"] } on-error={}
+"""
+HOST_VARS_R2 = 'mgmt_ip: 192.0.2.2\nbl_api_key_pass: "{{ vault_r2_api_key_pass }}"\n'
+RESET_FILES = {"baseline.rsc", "bl-api.crt", "bl-api.key", "ansible_rsa.pub", "monitor_rsa.pub"}
+RESET_AT = datetime(2026, 11, 13, 10, 5, 40, tzinfo=timezone.utc)   # T_START+90 s → :05 + 40 s
+
+
+class ResetRouter(FakeAnsible):
+    """Router z /file: prepare wgrywa pliki, reset (SSH) wyłącza go na `down_s`, po powrocie skrypt
+    baseline usuwa pliki resetu (o ile `script_completes`)."""
+
+    def __init__(self, clock, down_s=200, resets=True, script_completes=True, skip_upload=(),
+                 leave_rendered=False):
+        super().__init__()
+        self.clock = clock
+        self.down_s, self.resets, self.script_completes = down_s, resets, script_completes
+        self.skip_upload, self.leave_rendered = set(skip_upload), leave_rendered
+        self.files = {"flash": 0}
+        self.up = True
+        self.prepare_extra = None
+        self.template_seen = None
+
+    def read_many(self, router, paths, raw=False):
+        if list(paths) == ["file"]:
+            assert raw
+            self.calls.append("files")
+            if not self.up:
+                raise HarnessError("ansible-playbook: kod 2\nconnection refused")
+            return {"file": [{"name": n, "size": str(sz)} for n, sz in self.files.items()]}
+        if not self.up:
+            raise HarnessError("router nieosiągalny")
+        return super().read_many(router, paths, raw)
+
+    def playbook(self, playbook, router, tags=None, extra=None):
+        if Path(playbook).stem != "reset":
+            return super().playbook(playbook, router, tags, extra)
+        self.calls.append(tags)
+        if tags == "prepare":
+            self.prepare_extra = dict(extra)
+            self.template_seen = Path(extra["reset_template"]).read_text(encoding="utf-8")
+            if self.leave_rendered:
+                Path(extra["reset_rendered"]).write_text("rendered", encoding="utf-8")
+            for name in ["baseline.rsc"] + [u["dst"] for u in extra["reset_uploads"]]:
+                if name not in self.skip_upload:
+                    self.files[name] = 100
+        elif tags == "cleanup":
+            for n in extra["reset_names"]:
+                self.files.pop(n, None)
+        else:
+            raise AssertionError(tags)
+
+    def do_reset(self):
+        if not self.resets:
+            return
+        self.up = False
+
+        def back():
+            self.up = True
+            if self.script_completes:
+                for n in RESET_FILES:
+                    self.files.pop(n, None)
+        self.clock.at(self.clock.now() + timedelta(seconds=self.down_s), back)
+
+
+class ResetSsh(FakeSsh):
+    def __init__(self, ans: ResetRouter, ssh_fail=0):
+        super().__init__(ans)
+        self.remote: list[str] = []
+        self.ssh_fail = ssh_fail          # RouterOS 6: klucz hosta generowany po starcie
+
+    def run(self, router, remote, opts=(), timeout=None, input=None, check=True):
+        self.remote.append(remote)
+        self.ans.calls.append("ssh-reset")
+        assert remote.startswith("/system reset-configuration") and "keep-users=no" in remote
+        self.sent_at = self.ans.clock.now()
+        self.ans.do_reset()
+        return subprocess.CompletedProcess([], 255, "", "connection closed")
+
+    def forget_host(self, router):
+        self.ans.calls.append("forget")
+
+    def accept_new(self, router):
+        self.ans.calls.append("accept-new")
+        if self.ssh_fail:
+            self.ssh_fail -= 1
+            raise HarnessError("ssh r2 /system: kod 255: Received disconnect from 192.0.2.2 port 22:3:")
+
+    def fingerprints(self, router):
+        return ["256 SHA256:abc 192.0.2.2 (ED25519)"]
+
+
+def reset_ctx(tmp_path, ssh_fail=0, **router_kw):
+    repo = SiteRepo(tmp_path, state_doc())
+    d = repo.agent / "routers" / "r2"
+    (d / "baseline.rsc.j2").write_text(TEMPLATE_R2, encoding="utf-8")
+    (d / "host_vars.yml").write_text(HOST_VARS_R2, encoding="utf-8")
+    repo.commit_state(state_doc(), T_START - timedelta(minutes=20), "baseline")
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    upload = {}
+    for n in sorted(RESET_FILES - {"baseline.rsc"}):
+        (secrets_dir / n).write_text("x", encoding="utf-8")
+        upload[n] = secrets_dir / n
+    base = make_cfg(tmp_path, repo.clone)
+    routers = dict(base.routers)
+    routers["r2"] = RouterCfg("r2", "192.0.2.2", tmp_path / "vault-r2.yml",
+                              mgmt_return_timeout_s=420, upload=upload)
+    cfg = Config(**{**base.__dict__, "routers": routers, "build_dir": tmp_path / "build",
+                    "ssh_config": tmp_path / "ssh_config", "ssh_known_hosts": tmp_path / "kh"})
+    clock = FakeClock(T_START)
+    ans = ResetRouter(clock, **router_kw)
+    ssh = ResetSsh(ans, ssh_fail=ssh_fail)
+    ctx = Context(cfg, ans, sitelab.SiteLab(repo.clone), clock, random.Random(1), ssh=ssh)
+    return repo, ctx, ans, ssh
+
+
+def test_required_files_from_template():
+    assert reset.required_files(TEMPLATE_R2) == RESET_FILES       # komentarz pominięty
+
+
+def test_required_files_real_templates_shape():
+    r1 = 'import file-name=bl-api.crt passphrase=""\nimport public-key-file=ansible.pub user=ansible\n'
+    assert reset.required_files(r1) == {"baseline.rsc", "bl-api.crt", "ansible.pub"}
+
+
+def test_reset_ok(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path)
+    res = reset.run_reset(ctx, "r2", "hR")
+    assert res["ok"] is True, res["error"]
+    assert ans.calls == ["prepare", "files", "ssh-reset", "forget"] + ["files"] * 21 \
+        + ["accept-new", "gate"]
+    assert ssh.sent_at == RESET_AT and res["timing"]["reset_sent_at"] == ts(RESET_AT)
+    assert res["timing"]["offset_s"] == 40 and res["timing"]["reset_grid_offset_s"] == 40
+    assert res["timing"]["mgmt_return_s"] == 200 and res["timing"]["ssh_ready_s"] == 200
+    assert res["files"] == sorted(RESET_FILES)
+    assert res["host_key"]["fingerprints"] == ["256 SHA256:abc 192.0.2.2 (ED25519)"]
+    assert res["gate"]["ok"] is True and res["cleanup"] is None
+    ex = ans.prepare_extra
+    assert ex["baseline_rev"] == res["site_lab"]["sha"]
+    assert [u["dst"] for u in ex["reset_uploads"]] == sorted(RESET_FILES - {"baseline.rsc"})
+    assert Path(ex["reset_rendered"]).parent == tmp_path / "build"
+    assert not Path(ex["reset_template"]).exists()               # katalog tymczasowy usunięty
+    assert ans.template_seen == TEMPLATE_R2
+
+
+def test_reset_upload_mismatch_is_usage_error(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path)
+    r2 = ctx.cfg.router("r2")
+    up = {k: v for k, v in r2.upload.items() if k != "monitor_rsa.pub"}
+    ctx.cfg.routers["r2"] = RouterCfg("r2", r2.mgmt_address, r2.vault_file, upload=up)
+    with pytest.raises(UsageError, match="monitor_rsa.pub"):
+        reset.run_reset(ctx, "r2", "hR")
+    assert ans.calls == []
+
+
+def test_reset_missing_local_file_is_usage_error(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path)
+    ctx.cfg.router("r2").upload["bl-api.key"].unlink()
+    with pytest.raises(UsageError, match="bl-api.key"):
+        reset.run_reset(ctx, "r2", "hR")
+    assert ans.calls == []
+
+
+def test_reset_incomplete_upload_cleans_up_without_reset(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path, skip_upload={"bl-api.key"})
+    res = reset.run_reset(ctx, "r2", "hR")
+    assert res["ok"] is False and "bl-api.key" in res["error"]
+    assert "ssh-reset" not in ans.calls and "cleanup" in ans.calls
+    assert res["cleanup"] == "ok" and not RESET_FILES & set(ans.files)
+
+
+def test_reset_not_happening_times_out_and_cleans_up(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path, resets=False)
+    res = reset.run_reset(ctx, "r2", "hR")
+    assert res["ok"] is False and "MGMT nie wrócił w 420 s" in res["error"]
+    assert "pliki resetu nadal" in res["error"]
+    assert res["cleanup"] == "ok" and not RESET_FILES & set(ans.files)
+    assert ctx.clock.now() >= RESET_AT + timedelta(seconds=420)
+
+
+def test_reset_script_interrupted_is_failure(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path, script_completes=False)
+    res = reset.run_reset(ctx, "r2", "hR")
+    assert res["ok"] is False and "pliki resetu nadal" in res["error"]
+
+
+def test_reset_gate_mismatch(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path)
+    ans.extra_user = True
+    res = reset.run_reset(ctx, "r2", "hR")
+    assert res["ok"] is False and res["gate"]["ok"] is False
+    assert "bramka niezgodna" in res["error"] and res["cleanup"] is None
+
+
+def test_reset_shreds_leftover_rendered_file(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path, leave_rendered=True)
+    res = reset.run_reset(ctx, "r2", "hR")
+    assert res["ok"] is True, res["error"]
+    assert not Path(ans.prepare_extra["reset_rendered"]).exists()
+
+
+def test_reset_requires_build_dir(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path)
+    ctx.cfg = Config(**{**ctx.cfg.__dict__, "build_dir": None})
+    with pytest.raises(UsageError, match="build_dir"):
+        reset.run_reset(ctx, "r2", "hR")
+
+
+def test_cli_reset_requires_yes(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path)
+    args = cli._parser().parse_args(["reset", "r2"])
+    with pytest.raises(UsageError, match="--yes"):
+        cli.cmd_reset(args, ctx)
+    assert ans.calls == []
+
+
+def test_cli_reset_writes_result(tmp_path, capsys):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path)
+    args = cli._parser().parse_args(["reset", "r2", "--yes"])
+    assert cli.cmd_reset(args, ctx) == cli.EXIT_OK
+    out = list((tmp_path / "results").glob("*-reset-r2.json"))
+    assert len(out) == 1 and json.loads(out[0].read_text())["ok"] is True
+    assert list((tmp_path / "results").glob("*.log"))
+    assert "reset ok" in capsys.readouterr().out
+
+
+def test_ssh_known_hosts_commands(tmp_path):
+    kh = tmp_path / "kh"
+    cfg = Config(**{**make_cfg(tmp_path, tmp_path).__dict__, "ssh_config": tmp_path / "ssh_config",
+                    "ssh_known_hosts": kh})
+    seen = []
+
+    def runner(cmd, **kw):
+        seen.append(cmd)
+        out = "# Host 192.0.2.2 found: line 1\n256 SHA256:abc 192.0.2.2 (ED25519)\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+    s = Ssh(cfg, runner=runner)
+    r2 = cfg.router("r2")
+    s.forget_host(r2)                      # brak pliku → nic do usunięcia
+    assert seen == []
+    kh.write_text("x\n")
+    s.forget_host(r2)
+    assert seen[-1] == ["ssh-keygen", "-R", "192.0.2.2", "-f", str(kh)]
+    s.accept_new(r2)
+    assert "StrictHostKeyChecking=accept-new" in seen[-1] and f"UserKnownHostsFile={kh}" in seen[-1]
+    assert s.fingerprints(r2) == ["256 SHA256:abc 192.0.2.2 (ED25519)"]
+
+
+def test_reset_playbook_protects_rendered_baseline():
+    doc = yaml.safe_load((REPO_ROOT / "playbooks/common/reset.yml").read_text(encoding="utf-8"))
+    prepare = [t for t in doc[0]["tasks"] if "prepare" in t.get("tags", [])][0]
+    assert "never" in prepare["tags"]
+    tpl = [t for t in prepare["block"] if "ansible.builtin.template" in t][0]
+    assert tpl["no_log"] is True and tpl["ansible.builtin.template"]["mode"] == "0600"
+    assert any("shred" in json.dumps(t) for t in prepare["always"])
+    cleanup = [t for t in doc[0]["tasks"] if "cleanup" in t.get("tags", [])][0]
+    assert "never" in cleanup["tags"]
+
+
+def test_reset_waits_for_ssh_host_key_ros6(tmp_path):
+    # lab 2026-11-15 r2: api-ssl po 47 s, SSH rozłącza przy wymianie kluczy, bo klucz w generowaniu;
+    # ponawianie rzadkie (co ssh_retry_s), bo każda próba restartuje generowanie
+    repo, ctx, ans, ssh = reset_ctx(tmp_path, ssh_fail=2)
+    res = reset.run_reset(ctx, "r2", "hR")
+    assert res["ok"] is True, res["error"]
+    assert ans.calls.count("accept-new") == 3
+    assert res["timing"]["ssh_ready_s"] == 200 + 2 * 150 and res["timing"]["mgmt_return_s"] == 200
+
+
+def test_reset_ssh_never_ready(tmp_path):
+    repo, ctx, ans, ssh = reset_ctx(tmp_path, ssh_fail=10**6)
+    res = reset.run_reset(ctx, "r2", "hR")
+    assert res["ok"] is False and "SSH niegotowy" in res["error"] and "kod 255" in res["error"]
+    assert ctx.clock.now() >= RESET_AT + timedelta(seconds=200 + 600)
+    assert ans.calls.count("accept-new") == 5           # 0, 150, 300, 450, 600 s po MGMT
+    assert res["cleanup"] is None and res["gate"] is None
+
+
+# ---------------------------------------------------------------- iteracja 3: nowe scenariusze
+SCN = REPO_ROOT / "scenarios"
+POL004 = SCN / "policy" / "policy-proxy-enabled.yml"
+POL005 = SCN / "policy" / "policy-api-plain-enabled.yml"
+POL006 = SCN / "policy" / "policy-winbox-public.yml"
+SITE008 = SCN / "site" / "site-user-add.yml"
+BEN001 = SCN / "benign" / "benign-background.yml"
+
+
+@pytest.mark.parametrize("manifest,rule,fix,field", [
+    (POL004, "policy.services.proxy.disabled", lambda a: setattr(a, "proxy", False), "enabled"),
+    (POL005, "policy.services.api-plain.disabled",
+     lambda a: setattr(a, "api_disabled", True), "disabled"),
+])
+def test_pol004_pol005_pass(lab, manifest, rule, fix, field):
+    repo, clock, ans, ctx = lab
+    first_seen = APPLY_AT + timedelta(seconds=200)
+
+    def fire():
+        fix(ans)
+        repo.commit_state(state_doc(), first_seen + timedelta(seconds=10), "agent(r2)",
+                          report=report_doc(first_seen, rule=rule))
+    clock.at(first_seen + timedelta(seconds=10), fire)
+    res = run_scenario(ctx, manifest, offset_s=100)
+    assert res["verdict"] == "pass", res["reasons"]
+    assert res["router_read"]["end"] == res["router_read"]["pre"]          # end_state: baseline
+    assert field in res["router_read"]["confirm"]
+    assert res["teardown"]["ok"] is True
+
+
+def test_pol006_action_none_revert_restores_router_address(lab):
+    repo, clock, ans, ctx = lab
+    first_seen = APPLY_AT + timedelta(seconds=200)
+    rep = report_doc(first_seen, rule="policy.mgmt.winbox.not-public")
+    rep["actions"][0].update(type="none", status="skipped", verification=None)
+    clock.at(first_seen + timedelta(seconds=10),
+             lambda: repo.commit_state(state_doc(posture="policy-violation"),
+                                       first_seen + timedelta(seconds=10), "agent(r2)", report=rep))
+    res = run_scenario(ctx, POL006, offset_s=100)
+    assert res["verdict"] == "pass", res["reasons"]
+    assert res["router_read"]["pre"] == {"address": "192.0.2.0/24", "name": "winbox"}
+    assert res["router_read"]["end"] == {"name": "winbox"}                 # unchanged: adres pusty
+    revert_extra = [e for t, e in ans.extras if t == "revert"][0]
+    assert revert_extra == {"probe_pre": {"address": "192.0.2.0/24", "name": "winbox"}}
+    assert ans.winbox_address == "192.0.2.0/24" and res["teardown"]["ok"] is True
+
+
+def test_pol006_baseline_requires_nonempty_address(lab):
+    repo, clock, ans, ctx = lab
+    ans.winbox_address = ""
+    res = run_scenario(ctx, POL006, offset_s=100)
+    assert res["verdict"] == "invalid" and "address" in res["reasons"][0]
+    assert "apply" not in ans.calls
+
+
+def test_site008_pass_on_r1_with_pr(lab):
+    repo, clock, ans, ctx = lab
+    repo.commit_state(state_doc(router_id="r1"), T_START - timedelta(minutes=20), "r1", router="r1")
+    first_seen = APPLY_AT + timedelta(seconds=200)
+    rep = report_doc(first_seen, rule="local.drift.users")
+    rep["findings"][0].update(rule_source="local")
+    rep["verdict"]["posture"] = "site-drift"
+    rep["actions"][0].update(type="open-pr", status="succeeded", verification=None)
+    commit_at = first_seen + timedelta(seconds=10)
+    st = state_doc(router_id="r1", posture="site-drift", open_findings=[{"rule": "local.drift.users"}])
+    clock.at(commit_at, lambda: repo.commit_state(st, commit_at, "agent(r1)", report=rep, router="r1"))
+    branch = f"agent/r1/{rep['run']['run_id']}"
+    ctx.github.prs[branch] = [{"number": 7, "state": "OPEN", "headRefName": branch, "url": "u"}]
+    res = run_scenario(ctx, SITE008, close_artifacts=True, offset_s=100)
+    assert res["verdict"] == "pass", res["reasons"]
+    assert res["target"]["router_id"] == "r1" and res["router_read"]["pre"] is None
+    assert res["router_read"]["confirm"] == {"group": "read", "name": probes.SITE008_USER}
+    assert ans.users == [] and res["artifacts"][0]["closed"] == ["pr#7"]
+
+
+def test_ben001_apply_none_window_and_gate_only_teardown(h10):
+    repo, clock, ans, ctx = h10
+    st = h10_state(100, HB_AT) | {"router_id": "r1"}
+    repo.commit_state(st, T_START - timedelta(minutes=20), "r1", router="r1")
+    when = HB_NEXT
+    clock.at(when, lambda: repo.commit_state(h10_state(105, when - timedelta(seconds=5))
+                                             | {"router_id": "r1"}, when, "hb", router="r1"))
+    res = run_scenario(ctx, BEN001, offset_s=100)
+    assert res["verdict"] == "pass", res["reasons"]
+    assert res["timing"]["t0"] == ts(BEN_APPLY)            # t0 = zaplanowany moment
+    assert ans.calls == ["gate", "gate"]                    # bez apply/revert i bez odczytu obiektu
+    assert res["teardown"]["revert"] == "skipped" and res["teardown"]["ok"] is True
+    assert res["router_read"]["path"] is None
+
+
+def test_probe_field_semantics():
+    assert probes.matches({"address": "10.0.0.0/24"}, {"address": probes.NONEMPTY}) == []
+    assert probes.matches({"address": ""}, {"address": probes.NONEMPTY})
+    assert probes.matches({}, {"address": probes.NONEMPTY})
+    assert probes.matches({}, {"address": ""}) == []
+    assert probes.matches({"address": "x"}, {"address": ""})
+
+
+# ---------------------------------------------------------------- kampania
+class AutoAgent:
+    """Agent atrapy: 200 s po apply POL-003 wykrywa, naprawia i publikuje raport (kolejne run_seq)."""
+
+    def __init__(self, repo, clock, ans, router="r2"):
+        self.repo, self.clock, self.ans, self.router = repo, clock, ans, router
+        self.seq = 10
+        orig = ans.playbook
+
+        def playbook(pb, router_cfg, tags=None, extra=None):
+            orig(pb, router_cfg, tags, extra)
+            if tags == "apply" and Path(pb).stem == "socks-enabled":
+                self.schedule()
+        ans.playbook = playbook
+
+    def schedule(self):
+        self.seq += 1
+        seq = self.seq
+        first_seen = self.clock.now() + timedelta(seconds=200)
+        rep = report_doc(first_seen, seq=seq)
+        rep["run"]["run_id"] = f"RUN{seq:04d}"
+
+        def fire():
+            self.ans.enabled = False
+            self.repo.commit_state(state_doc(), first_seen + timedelta(seconds=10), f"agent {seq}",
+                                   report=rep, router=self.router)
+        self.clock.at(first_seen + timedelta(seconds=10), fire)
+
+
+def write_plan(tmp_path, **doc):
+    p = tmp_path / "plan.yml"
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    return p
+
+
+def test_campaign_runs_repeats_and_writes_summary(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    AutoAgent(repo, clock, ans)
+    plan = campaign_mod.load_plan(write_plan(tmp_path, campaign_id="t", close_artifacts=True, steps=[
+        {"manifest": "scenarios/policy/policy-socks-enabled.yml", "repeat": 3}]), ctx.cfg)
+    summ = campaign_mod.run_campaign(ctx, plan, "hC")
+    assert summ["aborted"] is None and summ["counts"] == {"pass": 3}
+    assert [r["index"] for r in summ["runs"]] == [1, 2, 3]
+    offs = []
+    for r in summ["runs"]:
+        doc = json.loads((ctx.cfg.results_dir / r["path"]).read_text())
+        assert doc["campaign"] == {"id": "t", "run_id": "hC", "step": 1, "index": r["index"], "of": 3}
+        offs.append(doc["timing"]["planned_offset_s"])
+    assert len(set(offs)) == 3                                  # losowe przesunięcie per przebieg
+    saved = json.loads((ctx.cfg.results_dir / "hC-campaign-t.json").read_text())
+    assert saved["counts"] == {"pass": 3} and saved["finished_at"]
+    assert (ctx.cfg.results_dir / f"{summ['runs'][0]['run_id']}.log").is_file()
+
+
+def test_campaign_aborts_on_invalid(tmp_path):
+    st = state_doc(posture="site-drift", open_findings=[{"rule": "local.ppp.secrets"}])
+    repo = SiteRepo(tmp_path, st)
+    ans = FakeAnsible()
+    ctx = Context(make_cfg(tmp_path, repo.clone), ans, sitelab.SiteLab(repo.clone),
+                  FakeClock(T_START), random.Random(1), ssh=FakeSsh(ans))
+    plan = campaign_mod.load_plan(write_plan(tmp_path, campaign_id="t", steps=[
+        {"manifest": "scenarios/policy/policy-socks-enabled.yml", "repeat": 5}]), ctx.cfg)
+    summ = campaign_mod.run_campaign(ctx, plan, "hC")
+    assert len(summ["runs"]) == 1 and summ["runs"][0]["verdict"] == "invalid"
+    assert "invalid" in summ["aborted"]
+
+
+def fake_reset(results, ok=True):
+    def run(ctx, router_id, run_id):
+        results.append(router_id)
+        return {"result_version": "1", "kind": "reset", "run_id": run_id, "router_id": router_id,
+                "ok": ok, "error": None if ok else "bramka niezgodna",
+                "timing": {"mgmt_return_s": 47.0, "ssh_ready_s": 47.1}}
+    return run
+
+
+@pytest.mark.parametrize("reset_ok,runs,aborted", [(True, 2, False), (False, 1, True)])
+def test_campaign_full_reset_after_teardown_mismatch(lab, tmp_path, monkeypatch, reset_ok, runs,
+                                                    aborted):
+    repo, clock, ans, ctx = lab
+    AutoAgent(repo, clock, ans)
+    done = []
+    reset = fake_reset(done, ok=reset_ok)
+
+    def reset_and_fix(ctx_, rid, run_id):          # pełny reset usuwa pozostałość po revert
+        ans.extra_user = False
+        return reset(ctx_, rid, run_id)
+    monkeypatch.setattr(campaign_mod, "run_reset", reset_and_fix)
+    orig = ans.playbook
+
+    def leave_once(pb, r, tags=None, extra=None):
+        orig(pb, r, tags, extra)
+        if tags == "revert" and not done:
+            ans.extra_user = True                  # revert „zapomina” → bramka po teardownie
+    ans.playbook = leave_once
+    plan = campaign_mod.load_plan(write_plan(tmp_path, campaign_id="t", steps=[
+        {"manifest": "scenarios/policy/policy-socks-enabled.yml", "repeat": 2}]), ctx.cfg)
+    summ = campaign_mod.run_campaign(ctx, plan, "hC")
+    assert summ["runs"][0]["teardown_ok"] is False
+    assert done == ["r2"] and summ["resets"][0]["reason"].startswith("teardown ")
+    assert len(summ["runs"]) == runs and bool(summ["aborted"]) is aborted
+
+
+def test_campaign_reset_at_start_failure_aborts(lab, tmp_path, monkeypatch):
+    repo, clock, ans, ctx = lab
+    done = []
+    monkeypatch.setattr(campaign_mod, "run_reset", fake_reset(done, ok=False))
+    r2 = ctx.cfg.router("r2")
+    ctx.cfg.routers["r2"] = RouterCfg("r2", r2.mgmt_address, r2.vault_file,
+                                      upload={"x": tmp_path / "x"})
+    ctx.cfg = Config(**{**ctx.cfg.__dict__, "build_dir": tmp_path / "b",
+                        "ssh_known_hosts": tmp_path / "kh"})
+    plan = campaign_mod.load_plan(write_plan(tmp_path, campaign_id="t", reset_at_start=["r2"], steps=[
+        {"manifest": "scenarios/policy/policy-socks-enabled.yml"}]), ctx.cfg)
+    summ = campaign_mod.run_campaign(ctx, plan, "hC")
+    assert done == ["r2"] and summ["runs"] == [] and "na starcie" in summ["aborted"]
+
+
+@pytest.mark.parametrize("doc,needle", [
+    ({"campaign_id": "t", "steps": [], "bogus": 1}, "nieznane klucze"),
+    ({"campaign_id": "Zły ID", "steps": [{"manifest": "x"}]}, "campaign_id"),
+    ({"campaign_id": "t", "steps": [{"manifest": "scenarios/policy/policy-socks-enabled.yml",
+                                     "repeat": 0}]}, "repeat"),
+    ({"campaign_id": "t", "steps": [{"manifest": "scenarios/policy/policy-socks-enabled.yml",
+                                     "target": "r9"}]}, "r9"),
+    ({"campaign_id": "t", "steps": [{"manifest": "scenarios/policy/policy-socks-enabled.yml",
+                                     "offset": 5}]}, "przesunięcie|offset"),
+    ({"campaign_id": "t", "reset_at_start": ["r2"],
+      "steps": [{"manifest": "scenarios/policy/policy-socks-enabled.yml"}]}, "build_dir"),
+])
+def test_campaign_plan_errors(lab, tmp_path, doc, needle):
+    repo, clock, ans, ctx = lab
+    with pytest.raises(UsageError, match=needle):
+        campaign_mod.load_plan(write_plan(tmp_path, **doc), ctx.cfg)
+
+
+def test_campaign_plan_duplicate_key(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    p = tmp_path / "plan.yml"
+    p.write_text("campaign_id: a\ncampaign_id: b\nsteps: []\n", encoding="utf-8")
+    with pytest.raises(UsageError, match="zduplikowany"):
+        campaign_mod.load_plan(p, ctx.cfg)
+
+
+def test_campaign_order_warnings(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    plan = campaign_mod.load_plan(write_plan(tmp_path, campaign_id="t", steps=[
+        {"manifest": "scenarios/policy/policy-socks-enabled.yml", "target": "r1"},
+        {"manifest": "scenarios/policy/policy-socks-enabled.yml", "target": "r2"},
+        {"manifest": "scenarios/benign/benign-background.yml"},
+        {"manifest": "scenarios/policy/policy-proxy-enabled.yml"}]), ctx.cfg)
+    w = plan["order_warnings"]
+    assert len(w) == 2 and "najpierw r2" in w[0] and "statyka → benign" in w[1]
+
+
+def test_repo_campaign_plans_are_valid(lab):
+    repo, clock, ans, ctx = lab
+    for p in sorted((REPO_ROOT / "harness" / "campaigns").glob("*.yml")):
+        plan = campaign_mod.load_plan(p, config_mod.load(REPO_ROOT / "harness" / "harness.example.yml"))
+        assert plan["order_warnings"] == [], p.name
+
+
+def test_cli_campaign_check_touches_nothing(lab, tmp_path, capsys):
+    repo, clock, ans, ctx = lab
+    code = _cli(lab, ["campaign", str(REPO_ROOT / "harness/campaigns/static-new.yml"), "--check"],
+                tmp_path)
+    assert code == cli.EXIT_OK and ans.calls == []
+    out = capsys.readouterr().out
+    assert "SITE-008 r1 ×1" in out and "BEN-001 r1 ×1" in out
+
+
+# ---------------------------------------------------------------- zestawienie
+def _row(mid, rid, verdict, mttd=None, **kw):
+    return {"run_id": f"h-{mid}-{rid}-{mttd}", "campaign": "", "manifest_id": mid, "router_id": rid,
+            "verdict": verdict, "mttd_s": mttd, "notify_s": kw.get("notify"),
+            "remediate_s": kw.get("remediate"), "window_s": kw.get("window"),
+            "t0_grid_offset_s": 100.0, "teardown_ok": True, "started_at": "2026-11-15T10:00:00Z"}
+
+
+def test_summary_aggregates():
+    rows = [_row("POL-003", "r2", "pass", m, notify=m + 2) for m in
+            (100, 110, 120, 130, 140, 150, 160, 170, 180, 300)]
+    rows.append(_row("POL-003", "r2", "timeout"))
+    rows.append(_row("BEN-002", "r1", "pass", window=800))
+    aggs = {(a["manifest_id"], a["router_id"]): a for a in summary_mod.aggregate(rows)}
+    a = aggs[("POL-003", "r2")]
+    assert a["n"] == 11 and a["pass"] == 10 and a["timeout"] == 1
+    assert (a["mttd_min"], a["mttd_median"], a["mttd_p90"], a["mttd_max"]) == (100, 145, 180, 300)
+    assert a["notify_median"] == 147
+    assert aggs[("BEN-002", "r1")]["window_median"] == 800 and aggs[("BEN-002", "r1")]["mttd_p90"] is None
+    md = summary_mod.markdown(rows, list(aggs.values()))
+    assert "| POL-003 | r2 | 11 | 10 |" in md
+
+
+def test_summary_collects_campaign_and_writes_csv(lab, tmp_path):
+    repo, clock, ans, ctx = lab
+    AutoAgent(repo, clock, ans)
+    plan = campaign_mod.load_plan(write_plan(tmp_path, campaign_id="t", steps=[
+        {"manifest": "scenarios/policy/policy-socks-enabled.yml", "repeat": 2}]), ctx.cfg)
+    campaign_mod.run_campaign(ctx, plan, "hC")
+    rd = ctx.cfg.results_dir
+    docs = summary_mod.collect([rd / "hC-campaign-t.json"])
+    assert len(docs) == 2 and all(d["campaign"]["id"] == "t" for d in docs)
+    assert len(summary_mod.collect([rd])) == 2                 # katalog: bez wyniku kampanii
+    out = tmp_path / "runs.csv"
+    assert cli.main(["summary", str(rd), "--csv", str(out)]) == cli.EXIT_OK
+    lines = out.read_text().splitlines()
+    assert lines[0].startswith("run_id,campaign,manifest_id") and len(lines) == 3

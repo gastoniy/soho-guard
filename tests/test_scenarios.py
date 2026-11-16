@@ -33,8 +33,9 @@ def load_json(name): return json.loads((EX / name).read_text(encoding="utf-8"))
 
 # ---------------- manifest_lint: pozytywne ----------------
 @pytest.mark.parametrize("name", [
-    "policy-socks-enabled.yml", "policy-winbox-public.yml",
-    "site-ppp-secret.yml", "benign-firewall-comment.yml",
+    "policy-socks-enabled.yml", "policy-winbox-public.yml", "policy-proxy-enabled.yml",
+    "policy-api-plain-enabled.yml", "site-ppp-secret.yml", "site-user-add.yml",
+    "benign-firewall-comment.yml", "benign-background.yml",
     "dynamic-c2-beacon.yml", "dynamic-c2-divergence.yml", "control-l2-attribution.yml",
 ])
 def test_examples_valid(name):

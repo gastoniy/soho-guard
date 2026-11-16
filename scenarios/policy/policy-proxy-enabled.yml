@@ -1,0 +1,21 @@
+schema_version: "1.0.0"
+id: POL-004
+title: "Web proxy włączony na R2 (naruszenie polityki uniwersalnej)"
+class: policy
+attack:
+  attck: ["T1090"]
+  timeline_ref: "proxy relay na routerach SOHO (wzorzec Faceless/AVrecon)"
+target: { router_id: r2, profile: ros6 }
+apply:
+  playbook: playbooks/policy/proxy-enabled.yml
+expect:
+  detected: true
+  phase: static
+  rule: policy.services.proxy.disabled
+  rule_source: universal
+  posture: policy-violation
+  action: auto-remediate
+  end_state: baseline
+  # Budżet POL/SITE: cykl 300 s + odczyt L1 + zapas (decyzja 2026-11-12).
+  max_detection_time_s: 420
+teardown: { reset: true }

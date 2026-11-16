@@ -1,0 +1,21 @@
+schema_version: "1.0.0"
+id: POL-005
+title: "Jawne API RouterOS (8728) włączone na R2 (naruszenie polityki uniwersalnej)"
+class: policy
+attack:
+  attck: ["T1110", "T1133"]
+  timeline_ref: "API bez szyfrowania i rate-limitingu — brute force (ICSA-26-209-05)"
+target: { router_id: r2, profile: ros6 }
+apply:
+  playbook: playbooks/policy/api-plain-enabled.yml
+expect:
+  detected: true
+  phase: static
+  rule: policy.services.api-plain.disabled
+  rule_source: universal
+  posture: policy-violation
+  action: auto-remediate
+  end_state: baseline
+  # Budżet POL/SITE: cykl 300 s + odczyt L1 + zapas (decyzja 2026-11-12).
+  max_detection_time_s: 420
+teardown: { reset: true }

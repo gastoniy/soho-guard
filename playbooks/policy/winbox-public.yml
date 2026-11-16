@@ -1,0 +1,44 @@
+---
+# POL-006: Winbox bez ograniczenia adresu (reguła policy.mgmt.winbox.not-public, bez remediate — D-A).
+# apply: /ip service winbox address=""; revert (--tags revert): adres sprzed apply.
+# Adres baseline zależy od routera (segment MGMT), więc revert bierze go z odczytu harnessu przed apply
+# (zmienna probe_pre, podawana przez harness). Firewall input baseline nadal ogranicza 8291 do MGMT.
+- name: POL-006 — Winbox bez ograniczenia adresu
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/router.yml
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ router_host }}"
+      port: "{{ router_api_port }}"
+      username: "{{ routeros_user }}"
+      password: "{{ routeros_password }}"
+      tls: true
+      validate_certs: true
+      validate_cert_hostname: false
+      ca_path: "{{ router_ca_path }}"
+  tasks:
+    - name: apply — usuń ograniczenie adresu Winbox
+      community.routeros.api_find_and_modify:
+        path: ip service
+        find:
+          name: winbox
+        values:
+          address: ""
+        require_matches_min: 1
+        require_matches_max: 1
+      no_log: "{{ harness_no_log }}"
+      tags: [apply]
+
+    - name: revert — przywróć adres sprzed apply
+      community.routeros.api_find_and_modify:
+        path: ip service
+        find:
+          name: winbox
+        values:
+          address: "{{ probe_pre.address }}"
+        require_matches_min: 1
+        require_matches_max: 1
+      no_log: "{{ harness_no_log }}"
+      tags: [revert, never]

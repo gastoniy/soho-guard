@@ -14,8 +14,12 @@ ansible:
 ca_path: /path/to/secrets/ca.crt             # CA do weryfikacji api-ssl routerów
 ssh:
   config: /path/to/ssh_config                # Host per router: IdentityFile, UserKnownHostsFile, BatchMode
+  known_hosts: /path/to/known_hosts          # osobny plik harnessu; pełny reset usuwa wpis routera (H4)
   # bin: ssh
+  # scp_bin: scp
+  # keygen_bin: ssh-keygen
   # timeout_s: 120
+build_dir: /path/to/build                    # wyrenderowany baseline (0600), usuwany (shred) zaraz po wgraniu
 # github:
 #   bin: gh                                  # tylko odczyt PR/issue; zamykanie wyłącznie z --close-artifacts
 artifacts:
@@ -33,14 +37,28 @@ timing:
   report_grace_s: 120
   precondition_wait_s: 900
   heartbeat_lead_s: 720
+  reset_offset_s: 40
+  mgmt_poll_s: 10
+  ssh_retry_s: 150
+  ssh_ready_timeout_s: 600
 routers:
   r1:
     mgmt_address: 192.0.2.1
-    vault_file: /path/to/secrets/vault-r1.yml   # zmienna vault_r1_ansible_pw
+    vault_file: /path/to/secrets/vault-r1.yml   # zmienne vault_r1_*
     api_port: 8729
-    mgmt_return_timeout_s: 300
+    mgmt_return_timeout_s: 180
+    upload:                                     # pełny reset: nazwa na routerze → plik lokalny
+      bl-api.crt: /path/to/secrets/r1-bl-api.crt
+      bl-api.key: /path/to/secrets/r1-bl-api.key
+      ansible.pub: /path/to/secrets/ansible.pub
+      monitor.pub: /path/to/secrets/r1-monitor.pub
   r2:
     mgmt_address: 192.0.2.2
-    vault_file: /path/to/secrets/vault-r2.yml   # zmienna vault_r2_ansible_pw
+    vault_file: /path/to/secrets/vault-r2.yml   # zmienne vault_r2_*
     api_port: 8729
-    mgmt_return_timeout_s: 300
+    mgmt_return_timeout_s: 420
+    upload:                                     # RouterOS 6: klucze jako *_rsa.pub (baseline.rsc.j2)
+      bl-api.crt: /path/to/secrets/r2-bl-api.crt
+      bl-api.key: /path/to/secrets/r2-bl-api.key
+      ansible_rsa.pub: /path/to/secrets/ansible.pub
+      monitor_rsa.pub: /path/to/secrets/r2-monitor.pub

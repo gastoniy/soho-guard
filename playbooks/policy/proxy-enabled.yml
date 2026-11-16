@@ -1,0 +1,41 @@
+---
+# POL-004: web proxy włączony (reguła policy.services.proxy.disabled, z remediate).
+# apply: /ip proxy enabled=yes; revert (--tags revert): enabled=no.
+# api_find_and_modify zmienia tylko podane pole (api_modify przywróciłby domyślne wartości pozostałych).
+- name: POL-004 — web proxy włączony
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/router.yml
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ router_host }}"
+      port: "{{ router_api_port }}"
+      username: "{{ routeros_user }}"
+      password: "{{ routeros_password }}"
+      tls: true
+      validate_certs: true
+      validate_cert_hostname: false
+      ca_path: "{{ router_ca_path }}"
+  tasks:
+    - name: apply — włącz /ip proxy
+      community.routeros.api_find_and_modify:
+        path: ip proxy
+        find: {}
+        values:
+          enabled: true
+        require_matches_min: 1
+        require_matches_max: 1
+      no_log: "{{ harness_no_log }}"
+      tags: [apply]
+
+    - name: revert — wyłącz /ip proxy
+      community.routeros.api_find_and_modify:
+        path: ip proxy
+        find: {}
+        values:
+          enabled: false
+        require_matches_min: 1
+        require_matches_max: 1
+      no_log: "{{ harness_no_log }}"
+      tags: [revert, never]

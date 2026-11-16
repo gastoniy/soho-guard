@@ -1,0 +1,11 @@
+schema_version: "1.0.0"
+id: BEN-001
+title: "Samo tło — brak zmian konfiguracji, brak findingu w oknie obserwacji"
+class: benign
+target: { router_id: r1, profile: ros7 }
+apply:
+  none: true
+expect:
+  detected: false
+  posture: no-violations
+teardown: { reset: true }

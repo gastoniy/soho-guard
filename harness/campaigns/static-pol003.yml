@@ -1,0 +1,10 @@
+# Iteracja 3 — kryterium: POL-003 ×10 na r2 i r1 bez ręcznej interwencji → pierwszy rozkład MTTD.
+# Pełny reset obu routerów na starcie (H4), kolejność H8: statyka r2 → r1. Przesunięcie losowe
+# (ziarno kampanii w wyniku; powtórzenie kampanii: --seed).
+campaign_id: static-pol003
+description: "POL-003 ×10 na r2 i r1 (rozkład MTTD, reguła z remediate)"
+reset_at_start: [r2, r1]
+close_artifacts: true
+steps:
+  - { manifest: scenarios/policy/policy-socks-enabled.yml, target: r2, repeat: 10 }
+  - { manifest: scenarios/policy/policy-socks-enabled.yml, target: r1, repeat: 10 }

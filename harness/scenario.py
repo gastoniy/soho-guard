@@ -1,14 +1,17 @@
-"""Przebieg jednego scenariusza z krokiem `apply`:
+"""Przebieg jednego scenariusza:
 
   warunki wstępne H8 (Git, z czekaniem) → bramka H5 → odczyt obiektu w baseline →
   apply poza oknem odczytu L1 (scenariusz bez detekcji: ok. 12 min przed heartbeatem, H10) →
-  potwierdzenie odczytem (`t0`, H3) →
+  potwierdzenie odczytem (`t0`, H3; `apply: none` — BEN-001: `t0` = zaplanowany moment, bez odczytu) →
     wykrywany: czekanie na raport do budżetu → oracle + czasy H11 + end_state własnym odczytem
     bez detekcji: okno H10 (commit stanu z run_seq ≥ +2) → oracle na raportach z okna
-  → teardown (`--tags revert` + bramka) → artefakty PR/issue (H9) → wynik JSON (H7).
+  → teardown (`--tags revert` + bramka; `apply: none` — sama bramka) → artefakty PR/issue (H9)
+  → wynik JSON (H7).
 
-Nieudany teardown nie zmienia werdyktu scenariusza: `teardown.ok = false`, CLI przerywa (kod 3).
-Harness nie wyzwala cyklu agenta — czeka na timer. Pełny reset: iteracja 3.
+Playbook dostaje `probe_pre` = odczyt obiektu przed apply (revert przywraca wartość zależną od
+routera, np. adres Winbox w POL-006). Nieudany teardown nie zmienia werdyktu scenariusza:
+`teardown.ok = false`, CLI przerywa (kod 3), kampania wykonuje pełny reset (H4).
+Harness nie wyzwala cyklu agenta — czeka na timer.
 """
 from __future__ import annotations
 
@@ -214,16 +217,17 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
         raise UsageError(f"harness.yml: brak windows.{m['class']} (H10)")
     res = _skeleton(ctx, m, manifest_path, router_id, run_id)
     verdict, reasons = None, []
-    applied = False
+    applied = False       # od tej chwili teardown (revert + bramka, albo sama bramka)
     playbook = m["apply"].get("playbook")
+    probe = None
+    extra = {}            # dla playbooka: probe_pre
     sha_before = site_doc = None
     reports = []          # (ReportRef, raport) do odczytu artefaktów
 
     try:
-        if not playbook:
-            raise HarnessError("scenariusze z `apply: none` — iteracja 3")
-        probe = probes_mod.get(m["id"])
-        res["router_read"]["path"] = probe.path
+        if playbook:
+            probe = probes_mod.get(m["id"])
+            res["router_read"]["path"] = probe.path
 
         # --- H8 ---
         sha_before, site_doc, state, pre = _wait_preconditions(ctx, router_id, exp, res)
@@ -239,13 +243,15 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
             return res
 
         # --- obiekt w baseline ---
-        row = _read_probe(ctx, rcfg, probe)
-        res["router_read"]["pre"] = probes_mod.view(row, probe)
-        diffs = probes_mod.matches(row, probe.baseline)
-        if diffs:
-            verdict = "invalid"
-            reasons = ["router nie w baseline przed apply: " + "; ".join(diffs)]
-            return res
+        if probe is not None:
+            row = _read_probe(ctx, rcfg, probe)
+            res["router_read"]["pre"] = probes_mod.view(row, probe)
+            extra = {"probe_pre": res["router_read"]["pre"]}
+            diffs = probes_mod.matches(row, probe.baseline)
+            if diffs:
+                verdict = "invalid"
+                reasons = ["router nie w baseline przed apply: " + "; ".join(diffs)]
+                return res
 
         # --- plan apply ---
         if exp["detected"]:
@@ -273,14 +279,15 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
         apply_started = ctx.clock.now()
         res["timing"]["apply_started_at"] = iso(apply_started)
         applied = True
-        ctx.ansible.playbook(playbook, rcfg, "apply")
+        if playbook:
+            ctx.ansible.playbook(playbook, rcfg, "apply", extra)
 
-        # --- t0 = potwierdzenie zmiany własnym odczytem (H3) ---
-        row = _read_probe(ctx, rcfg, probe)
-        res["router_read"]["confirm"] = probes_mod.view(row, probe)
-        diffs = probes_mod.matches(row, probe.applied)
-        if diffs:
-            raise HarnessError("apply niepotwierdzony odczytem: " + "; ".join(diffs))
+            # --- t0 = potwierdzenie zmiany własnym odczytem (H3) ---
+            row = _read_probe(ctx, rcfg, probe)
+            res["router_read"]["confirm"] = probes_mod.view(row, probe)
+            diffs = probes_mod.matches(row, probe.applied)
+            if diffs:
+                raise HarnessError("apply niepotwierdzony odczytem: " + "; ".join(diffs))
         t0 = ctx.clock.now()
         res["timing"].update(
             t0=iso(t0),
@@ -356,7 +363,7 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
 
     finally:
         if applied:
-            _teardown(ctx, playbook, rcfg, sha_before, site_doc, res)
+            _teardown(ctx, playbook, rcfg, sha_before, site_doc, res, extra)
         if reports and ctx.github is not None:
             _artifacts(ctx, router_id, reports, close_artifacts, res)
         try:
@@ -369,15 +376,18 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
                  "" if res["teardown"]["ok"] in (True, None) else " (teardown niezgodny)")
 
 
-def _teardown(ctx, playbook, rcfg, sha_before, site_doc, res) -> None:
+def _teardown(ctx, playbook, rcfg, sha_before, site_doc, res, extra=None) -> None:
     td = res["teardown"]
-    try:
-        ctx.ansible.playbook(playbook, rcfg, "revert")
-        td["revert"] = "ok"
-    except HarnessError as e:
-        td.update(revert="error", error=str(e), ok=False)
-        log.error("teardown: %s", e)
-        return
+    if not playbook:
+        td["revert"] = "skipped"          # apply: none — nic do cofania, sama bramka
+    else:
+        try:
+            ctx.ansible.playbook(playbook, rcfg, "revert", extra)
+            td["revert"] = "ok"
+        except HarnessError as e:
+            td.update(revert="error", error=str(e), ok=False)
+            log.error("teardown: %s", e)
+            return
     try:
         g = gate_mod.check(ctx.ssh, ctx.ansible, ctx.site, sha_before, site_doc, rcfg)
     except HarnessError as e:

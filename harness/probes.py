@@ -3,8 +3,10 @@
 Dla każdego scenariusza z krokiem `apply`: menu RouterOS, filtr wiersza, wartości po apply
 (potwierdzenie → `t0`) i wartości baseline (warunek przed apply oraz `end_state: baseline`).
 `end_state: unchanged` = po detekcji router nadal ma wartości z apply. `ABSENT` = wiersza brak
-(np. baseline SITE-007: sekret PPP nie istnieje). Stałe muszą być zgodne z playbookami
-(sprawdza to test).
+(np. baseline SITE-007: sekret PPP nie istnieje). `NONEMPTY` = pole ma niepustą wartość, gdy baseline
+zależy od routera (POL-006: adres Winbox = segment MGMT). Wartość oczekiwana `""` przyjmuje też brak
+pola (RouterOS pomija puste). Scenariusze z `apply: none` (BEN-001) nie mają odczytu.
+Stałe muszą być zgodne z playbookami (sprawdza to test).
 """
 from __future__ import annotations
 
@@ -13,6 +15,14 @@ from dataclasses import dataclass, field
 from . import HarnessError
 
 ABSENT = None   # oczekiwany brak wiersza pasującego do `where`
+
+
+class _NonEmpty:
+    def __repr__(self):
+        return "<niepuste>"
+
+
+NONEMPTY = _NonEmpty()   # pole ma niepustą wartość (baseline zależny od routera)
 
 
 @dataclass(frozen=True)
@@ -26,6 +36,7 @@ class Probe:
 BEN002_COMMENT_BASELINE = "BL: in icmp"
 BEN002_COMMENT_APPLIED = "BL: in icmp (BEN-002)"
 SITE007_SECRET = "harness-site-007"
+SITE008_USER = "harness-site-008"
 
 PROBES: dict[str, Probe] = {
     "POL-003": Probe(path="ip socks", applied={"enabled": True}, baseline={"enabled": False}),
@@ -35,6 +46,13 @@ PROBES: dict[str, Probe] = {
                      baseline={"comment": BEN002_COMMENT_BASELINE}),
     "SITE-007": Probe(path="ppp secret", where={"name": SITE007_SECRET},
                       applied={"name": SITE007_SECRET}, baseline=ABSENT),
+    "POL-004": Probe(path="ip proxy", applied={"enabled": True}, baseline={"enabled": False}),
+    "POL-005": Probe(path="ip service", where={"name": "api"},
+                     applied={"disabled": False}, baseline={"disabled": True}),
+    "POL-006": Probe(path="ip service", where={"name": "winbox"},
+                     applied={"address": ""}, baseline={"address": NONEMPTY}),
+    "SITE-008": Probe(path="user", where={"name": SITE008_USER},
+                      applied={"name": SITE008_USER, "group": "read"}, baseline=ABSENT),
 }
 
 _TRUE = {True, "true", "yes"}
@@ -89,4 +107,12 @@ def matches(row: dict | None, expected: dict | None) -> list[str]:
     if row is None:
         return ["wiersz nieobecny"]
     return [f"{k}: {row.get(k)!r} != {v!r}" for k, v in expected.items()
-            if _norm(row.get(k)) != _norm(v)]
+            if not _field_ok(row.get(k), v)]
+
+
+def _field_ok(have, want) -> bool:
+    if want is NONEMPTY:
+        return have not in (None, "", [])
+    if want == "":
+        return have in (None, "")
+    return _norm(have) == _norm(want)

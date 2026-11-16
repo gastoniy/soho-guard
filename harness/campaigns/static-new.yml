@@ -1,0 +1,11 @@
+# Iteracja 3 — nowe manifesty, każdy co najmniej raz `pass`. Statyka r2 → r1, potem BEN-001 (H8).
+# Bez resetu na starcie (routery po static-pol003 są w baseline; bramka przed każdym apply).
+campaign_id: static-new
+description: "POL-004, POL-005, POL-006 (r2), SITE-008 (r1), BEN-001 (r1) — po jednym przebiegu"
+close_artifacts: true
+steps:
+  - { manifest: scenarios/policy/policy-proxy-enabled.yml }
+  - { manifest: scenarios/policy/policy-api-plain-enabled.yml }
+  - { manifest: scenarios/policy/policy-winbox-public.yml }
+  - { manifest: scenarios/site/site-user-add.yml }
+  - { manifest: scenarios/benign/benign-background.yml }

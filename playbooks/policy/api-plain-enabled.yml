@@ -1,0 +1,43 @@
+---
+# POL-005: jawne API (8728) włączone (reguła policy.services.api-plain.disabled, z remediate).
+# apply: /ip service api disabled=no; revert (--tags revert): disabled=yes.
+# Dostęp do 8728 nadal ogranicza firewall input baseline (tylko MGMT) — ekspozycja wyłącznie w labie.
+- name: POL-005 — jawne API włączone
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/router.yml
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ router_host }}"
+      port: "{{ router_api_port }}"
+      username: "{{ routeros_user }}"
+      password: "{{ routeros_password }}"
+      tls: true
+      validate_certs: true
+      validate_cert_hostname: false
+      ca_path: "{{ router_ca_path }}"
+  tasks:
+    - name: apply — włącz /ip service api
+      community.routeros.api_find_and_modify:
+        path: ip service
+        find:
+          name: api
+        values:
+          disabled: false
+        require_matches_min: 1
+        require_matches_max: 1
+      no_log: "{{ harness_no_log }}"
+      tags: [apply]
+
+    - name: revert — wyłącz /ip service api
+      community.routeros.api_find_and_modify:
+        path: ip service
+        find:
+          name: api
+        values:
+          disabled: true
+        require_matches_min: 1
+        require_matches_max: 1
+      no_log: "{{ harness_no_log }}"
+      tags: [revert, never]

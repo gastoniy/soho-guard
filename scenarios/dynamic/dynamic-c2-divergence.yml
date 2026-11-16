@@ -7,11 +7,12 @@ attack:
   timeline_ref: "TrickBot / Glupteba C2 beaconing"
 target: { router_id: r1, profile: ros7 }
 apply:
-  playbook: playbooks/dynamic/enable-covert-forwarding.yml
+  playbook: playbooks/dynamic/covert-icmp.yml
 generate:
-  from: kali
+  # D-E: ruch generuje sam router (ping do c2-lab), ukryty raw output notrack dodanym w apply.
+  from: router
   to_endpoint: c2-lab
-  behavior: "kanał C2 ukryty przed self-reportem, powtarzalne sesje"
+  behavior: "ping do c2-lab ukryty przed L1 (raw notrack), sesje w conn.log"
   t0_marker: true
 expect:
   detected: true

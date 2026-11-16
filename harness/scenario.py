@@ -28,10 +28,12 @@ import yaml
 from . import REPO_ROOT, HarnessError, UsageError
 from . import artifacts as artifacts_mod
 from . import gate as gate_mod
+from . import generate as generate_mod
 from . import probes as probes_mod
 from .config import Config
 from .oracle import evaluate, oracle_eval
-from .results import RESULT_VERSION, harness_commit, new_run_id
+from .reset import run_reset
+from .results import RESULT_VERSION, harness_commit, new_run_id, write_reset
 from .router import Ansible, Ssh
 from .sitelab import SiteLab, preconditions, router_profile
 from .timing import (Clock, check_offset, grid_offset, in_avoid_window, iso, last_grid, parse_ts,
@@ -41,6 +43,11 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 import manifest_lint  # noqa: E402
 
 log = logging.getLogger("harness")
+
+# Zadeklarowane efekty uboczne scenariusza: reguły findingów, które apply zostawia w konfiguracji
+# (emulacja zostawia ślad, którego prawdziwy implant by nie zostawił). Nie są to naruszenia agenta
+# (nie zmieniają werdyktu) — zapisujemy je w wyniku i przy --close-artifacts zamykamy ich PR (H9).
+SIDE_EFFECTS = {"DYN-011a": ("local.drift.firewall-raw",)}
 
 
 @dataclass
@@ -100,12 +107,15 @@ def _skeleton(ctx: Context, manifest: dict, manifest_path: Path, router_id: str,
         "gate_before": None,
         "timing": {"rng_seed": ctx.seed},
         "report": None,
+        "generate": None,
+        "side_effects": None,
         "window": None,
         "metrics": None,
         "oracle": {"violations": []},
         "router_read": {"path": None, "pre": None, "confirm": None, "end": None,
                         "end_state_expected": manifest["expect"].get("end_state")},
-        "teardown": {"ok": None, "revert": None, "gate": None, "error": None},
+        "teardown": {"ok": None, "revert": None, "gate": None, "error": None,
+                     "reset": None, "resolved": None},
         "artifacts": None,
         "verdict": None,
         "reasons": [],
@@ -187,6 +197,19 @@ def _wait_window(ctx, m, router_id, sha_before, base_seq, t0, res):
         ctx.clock.sleep(min(ctx.cfg.timing.poll_interval_s, remaining))
 
 
+def _side_effect_reports(ctx, router_id, base, head, rules, not_before):
+    """Raporty z `base..head` z nowym findingiem o regule z `rules` (efekt uboczny apply)."""
+    out = []
+    for ref in ctx.site.reports_since(base, head, router_id):
+        rep = ctx.site.report(ref)
+        for fd in rep.get("findings", []):
+            if (fd.get("rule") in rules and fd.get("status") == "new"
+                    and parse_ts(fd["first_seen_at"]) >= not_before):
+                out.append((ref, rep, fd["rule"]))
+                break
+    return out
+
+
 def _report_summary(ref, rep: dict, finding: dict | None) -> dict:
     fp = finding["fingerprint"] if finding else None
     return {
@@ -206,7 +229,7 @@ def _report_summary(ref, rep: dict, finding: dict | None) -> dict:
 # ---------------------------------------------------------------- przebieg
 def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
                  offset_s: float | None = None, close_artifacts: bool = False,
-                 run_id: str | None = None) -> dict:
+                 run_id: str | None = None, gen_index: int = 0) -> dict:
     m = load_manifest(manifest_path)
     exp = m["expect"]
     router_id = target or m["target"]["router_id"]
@@ -219,13 +242,15 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
     verdict, reasons = None, []
     applied = False       # od tej chwili teardown (revert + bramka, albo sama bramka)
     playbook = m["apply"].get("playbook")
+    has_generate = "generate" in m          # scenariusz behawioralny: ruch z kroku generate, t0 = jego start
     probe = None
-    extra = {}            # dla playbooka: probe_pre
+    gen_target = None
+    extra = {}            # dla playbooka: probe_pre (static) albo covert_target (dynamic)
     sha_before = site_doc = None
     reports = []          # (ReportRef, raport) do odczytu artefaktów
 
     try:
-        if playbook:
+        if playbook and not has_generate:
             probe = probes_mod.get(m["id"])
             res["router_read"]["path"] = probe.path
 
@@ -252,6 +277,13 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
                 verdict = "invalid"
                 reasons = ["router nie w baseline przed apply: " + "; ".join(diffs)]
                 return res
+
+        # --- cel kroku generate (dynamic): adres z puli endpointu, przekazany też do apply ---
+        if has_generate:
+            gen_target = generate_mod.pick_target(ctx.cfg, m["generate"]["to_endpoint"], gen_index)
+            extra = {**extra, "covert_target": gen_target}
+            res["generate"] = {"from": m["generate"]["from"],
+                               "to_endpoint": m["generate"]["to_endpoint"], "target": gen_target}
 
         # --- plan apply ---
         if exp["detected"]:
@@ -281,14 +313,20 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
         applied = True
         if playbook:
             ctx.ansible.playbook(playbook, rcfg, "apply", extra)
-
-            # --- t0 = potwierdzenie zmiany własnym odczytem (H3) ---
-            row = _read_probe(ctx, rcfg, probe)
-            res["router_read"]["confirm"] = probes_mod.view(row, probe)
-            diffs = probes_mod.matches(row, probe.applied)
-            if diffs:
-                raise HarnessError("apply niepotwierdzony odczytem: " + "; ".join(diffs))
-        t0 = ctx.clock.now()
+            if probe is not None:
+                # --- t0 = potwierdzenie zmiany własnym odczytem (H3) ---
+                row = _read_probe(ctx, rcfg, probe)
+                res["router_read"]["confirm"] = probes_mod.view(row, probe)
+                diffs = probes_mod.matches(row, probe.applied)
+                if diffs:
+                    raise HarnessError("apply niepotwierdzony odczytem: " + "; ".join(diffs))
+        if has_generate:
+            # ruch z routera (ping); t0 = start pingu (generate.t0_marker)
+            res["generate"] = generate_mod.run_generate(ctx, m, rcfg, gen_target) | {
+                "target": gen_target}
+            t0 = generate_mod.started_at(res["generate"])
+        else:
+            t0 = ctx.clock.now()
         res["timing"].update(
             t0=iso(t0),
             t0_grid_offset_s=round(grid_offset(t0, ctx.cfg.timing.cycle_s), 3),
@@ -307,6 +345,15 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
             res["versions"]["agent"] = det.report["run"].get("agent_version")
             res["report"] = _report_summary(det.ref, det.report, det.finding)
             log.info("%s %s: raport %s", m["id"], router_id, det.ref.path)
+
+            # --- zadeklarowane efekty uboczne (np. local.drift.firewall-raw): zapis + artefakty ---
+            se_rules = SIDE_EFFECTS.get(m["id"], ())
+            if se_rules:
+                se = _side_effect_reports(ctx, router_id, sha_before, det.ref.commit, se_rules,
+                                          apply_started)
+                res["side_effects"] = [{"rule": rule, "report": ref.path} for ref, _, rule in se]
+                reports += [(ref, rep) for ref, rep, _ in se if ref.path != det.ref.path]
+
             state_at = ctx.site.state(det.ref.commit, router_id)
 
             end_diffs = None
@@ -363,7 +410,10 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
 
     finally:
         if applied:
-            _teardown(ctx, playbook, rcfg, sha_before, site_doc, res, extra)
+            if has_generate and (m.get("teardown") or {}).get("reset"):
+                _teardown_dynamic(ctx, m, rcfg, router_id, sha_before, site_doc, res, extra)
+            else:
+                _teardown(ctx, playbook, rcfg, sha_before, site_doc, res, extra)
         if reports and ctx.github is not None:
             _artifacts(ctx, router_id, reports, close_artifacts, res)
         try:
@@ -401,6 +451,66 @@ def _teardown(ctx, playbook, rcfg, sha_before, site_doc, res, extra=None) -> Non
         log.error("teardown: %s", td["error"])
         for ln in g.export_diff + g.objects_diff:
             log.error("  %s", ln)
+
+
+def _teardown_dynamic(ctx, m, rcfg, router_id, sha_before, site_doc, res, extra) -> None:
+    """Teardown scenariusza dynamicznego (H4): revert reguły + pełny reset + czekanie na
+    rozwiązanie findingu (okno 60 min agenta). Pełny reset przywraca baseline, więc revert jest
+    obroną na wypadek, gdyby resetu nie było."""
+    td = res["teardown"]
+    playbook = m["apply"].get("playbook")
+    if playbook:
+        try:
+            ctx.ansible.playbook(playbook, rcfg, "revert", extra)
+            td["revert"] = "ok"
+        except HarnessError as e:
+            td["revert"] = "error"          # niefatalne: pełny reset poniżej i tak przywraca baseline
+            log.error("teardown: revert: %s (pełny reset to naprawi)", e)
+
+    rid = new_run_id(ctx.clock.now())
+    log.info("%s %s: teardown — pełny reset %s", m["id"], router_id, rid)
+    try:
+        reset = run_reset(ctx, router_id, rid)
+    except (HarnessError, UsageError) as e:
+        td.update(reset={"run_id": rid, "ok": False, "error": str(e)}, ok=False,
+                  error=f"pełny reset: {e}")
+        return
+    path = write_reset(reset, ctx.cfg.results_dir)
+    td["reset"] = {"run_id": rid, "ok": reset["ok"], "error": reset["error"], "path": path.name}
+    td["gate"] = reset["gate"]
+    if reset.get("interrupted"):
+        raise KeyboardInterrupt
+    if not reset["ok"]:
+        td.update(ok=False, error=f"pełny reset niezgodny: {reset['error']}")
+        return
+
+    resolved, why = _wait_resolved(ctx, router_id)
+    td["resolved"] = resolved
+    td["ok"] = resolved["ok"]
+    if not resolved["ok"]:
+        td["error"] = why
+        log.error("teardown: %s", why)
+
+
+def _wait_resolved(ctx, router_id):
+    """Czeka, aż stan routera ma `open_findings == []` i `posture: no-violations` (okno dynamiczne
+    wygasło) do `timing.resolve_timeout_s`."""
+    deadline = ctx.clock.now() + timedelta(seconds=ctx.cfg.timing.resolve_timeout_s)
+    while True:
+        head = ctx.site.fetch()
+        state = ctx.site.state(head, router_id)
+        of = state.get("open_findings") or []
+        posture = state.get("posture")
+        if not of and posture == "no-violations":
+            return {"ok": True, "at": iso(ctx.clock.now()),
+                    "state_run_seq": (state.get("last_run") or {}).get("run_seq")}, None
+        remaining = (deadline - ctx.clock.now()).total_seconds()
+        if remaining <= 0:
+            rules = ", ".join(fd.get("rule", "?") for fd in of)
+            return ({"ok": False, "open_findings": rules, "posture": posture},
+                    f"finding nierozwiązany w {ctx.cfg.timing.resolve_timeout_s} s: "
+                    + (rules or f"posture {posture}"))
+        ctx.clock.sleep(min(ctx.cfg.timing.poll_interval_s, remaining))
 
 
 def _artifacts(ctx, router_id, reports, close_artifacts, res) -> None:

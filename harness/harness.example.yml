@@ -42,8 +42,13 @@ timing:
   ssh_retry_s: 150
   ssh_ready_timeout_s: 600
   resolve_timeout_s: 5400                     # dynamic: czekanie na rozwiązanie findingu po resecie
+resolve_timeouts:                             # nadpisanie resolve_timeout_s per id manifestu [s]
+  # D-B5: finding RITA znika ok. 24–25 h po ostatnim połączeniu (okno zbioru RITA 24 h);
+  # w tym czasie naprawy na r1 są wstrzymane
+  DYN-011b: 93600
 endpoints:                                    # krok generate: endpoint → pula adresów (c2-lab na Kali)
-  c2-lab:                                     # DYN-011a: kolejne powtórzenia biorą kolejny adres (H8)
+  c2-lab:                                     # DYN-011a: kolejne powtórzenia biorą kolejny adres (H8);
+                                              # DYN-011b: cel z --operator-checks (adres z tej puli)
     addresses: [192.0.2.60, 192.0.2.61, 192.0.2.62]
 routers:
   r1:

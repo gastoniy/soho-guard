@@ -1,0 +1,11 @@
+# Iteracja 5 — para DYN-011b (r1, detekcja RITA) + CTL-001 (r2, kontrola atrybucji L2), 1 przebieg (D-B6).
+# Ruch z klienta za r1 steruje operator ręcznie: harness prosi w terminalu o start (t0) i stop.
+# Przed startem na węźle: check-rita-dyn011b.sh (okno zbioru ≥ 23 h, import < 2 h, 0 połączeń
+# WAN r1 → cel w 26 h) i uruchomienie z --operator-checks <plik>. Przebieg ok. 14 h + teardown
+# do 2,5 h — start wieczorem, lab bez przerw, host bez usypiania.
+# Bez reset_at_start — bramka przed startem potwierdza baseline obu routerów.
+campaign_id: dyn-011b
+description: "DYN-011b + CTL-001 — beacon 60 s z klienta za r1, detekcja RITA na r1, r2 czysty"
+close_artifacts: true
+steps:
+  - { manifest: scenarios/dynamic/dynamic-c2-beacon.yml, control: scenarios/control/control-l2-attribution.yml }

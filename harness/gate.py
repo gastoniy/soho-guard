@@ -3,7 +3,11 @@
 Dwa niezależne porównania, oba kontem `ansible`:
   1. `/export terse hide-sensitive` (SSH) z `routers/<id>/export.rsc` w site-lab — pomijany tylko
      nagłówek (linie `#` przed pierwszą linią zaczynającą się od `/`); pozostałe linie `#`, w tym
-     `#error exporting`, porównywane dosłownie;
+     `#error exporting`, porównywane dosłownie. Porównanie per menu (2026-11-18): linie grupowane
+     po ścieżce menu (`/ip firewall filter`, `/ip dhcp-server`, …; linie `#` w jednej grupie);
+     treść i kolejność wewnątrz menu porównywane dosłownie (kolejność reguł firewalla ma znaczenie),
+     pomijana jest tylko kolejność, w jakiej RouterOS wypisuje same menu. RouterOS 7 przestawia blok
+     `/ip dhcp-server` kilka minut po pierwszej dzierżawie, bez zmiany konfiguracji (lab 2026-11-18);
   2. `/user`, `/user ssh-keys`, `/certificate`, `/file` (api-ssl, zwykły print — kolekcja modeluje
      te menu dopiero od RouterOS 7.15) z `routers/<id>/gate-objects.yml`
      — tylko pola stabilne, wzorzec generowany `python -m harness gate <router> --dump-objects`
@@ -64,10 +68,38 @@ def export_body(text: str) -> list[str]:
     return body
 
 
+# komendy terse-eksportu kończące ścieżkę menu (`/ip dhcp-server add …`, `/ip smb set …`)
+_COMMANDS = {"add", "set", "remove", "unset", "enable", "disable"}
+
+
+def menu_of(line: str) -> str:
+    """Ścieżka menu linii eksportu; linie `#` (np. `#error exporting`) — wspólna grupa `#`."""
+    if line.startswith("#"):
+        return "#"
+    words = line.split(" ")
+    for i, w in enumerate(words):
+        if w in _COMMANDS:
+            return " ".join(words[:i])
+    return line                     # bez rozpoznanej komendy: linia jest własną grupą
+
+
+def _by_menu(lines: list[str]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for ln in lines:
+        out.setdefault(menu_of(ln), []).append(ln)
+    return out
+
+
 def diff_export(actual: str, pattern: str) -> list[str]:
-    a, p = export_body(actual), export_body(pattern)
-    return [ln for ln in difflib.unified_diff(p, a, "wzorzec", "router", n=0, lineterm="")
-            if not ln.startswith(("---", "+++"))]
+    """Różnice per menu: `@@ <menu> @@`, potem linie `-` (wzorzec) i `+` (router)."""
+    a, p = _by_menu(export_body(actual)), _by_menu(export_body(pattern))
+    out: list[str] = []
+    for menu in list(p) + [m for m in a if m not in p]:
+        d = [ln for ln in difflib.unified_diff(p.get(menu, []), a.get(menu, []), n=0, lineterm="")
+             if not ln.startswith(("---", "+++", "@@"))]
+        if d:
+            out += [f"@@ {menu} @@", *d]
+    return out
 
 
 # ---------------------------------------------------------------- obiekty

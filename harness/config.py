@@ -86,6 +86,10 @@ class Config:
     # krok ruchowy (generate): endpoint → pula adresów (np. c2-lab na Kali); kolejne powtórzenia
     # biorą kolejny adres (H8: inny cel). Same adresy, nigdy w repo (harness.yml jest w .gitignore).
     endpoints: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # nadpisanie timing.resolve_timeout_s per id manifestu (np. DYN-011b, D-B5: finding RITA znika
+    # ok. 24–25 h po ostatnim połączeniu (okno zbioru RITA 24 h); w tym czasie naprawy na r1 są
+    # wstrzymane) — bez zmiany schematu manifestu
+    resolve_timeouts: dict[str, int] = field(default_factory=dict)
 
     def router(self, router_id: str) -> RouterCfg:
         try:
@@ -98,6 +102,9 @@ class Config:
         if not addrs:
             raise UsageError(f"harness.yml: brak endpoints.{name}.addresses (krok generate)")
         return addrs
+
+    def resolve_timeout(self, manifest_id: str) -> int:
+        return self.resolve_timeouts.get(manifest_id, self.timing.resolve_timeout_s)
 
 
 def _p(v: str, base: Path) -> Path:
@@ -194,10 +201,18 @@ def load(path: Path) -> Config:
 
     endpoints = {}
     for name, ep in (doc.get("endpoints") or {}).items():
+        unknown = sorted(set(ep or {}) - {"addresses"})
+        if unknown:
+            raise UsageError(f"harness.yml: nieznane klucze endpoints.{name}: {unknown}")
         addrs = (ep or {}).get("addresses")
         if not isinstance(addrs, list) or not addrs or any(not isinstance(a, str) for a in addrs):
             raise UsageError(f"harness.yml: endpoints.{name}.addresses musi być niepustą listą adresów")
         endpoints[str(name)] = tuple(str(a) for a in addrs)
+
+    rt = doc.get("resolve_timeouts") or {}
+    if not isinstance(rt, dict) or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0
+                                       for v in rt.values()):
+        raise UsageError("harness.yml: resolve_timeouts musi być mapą <id manifestu>: <s> (> 0)")
 
     ssh = _req(doc, "ssh", "")
 
@@ -225,4 +240,5 @@ def load(path: Path) -> Config:
         routers=routers,
         timing=timing,
         endpoints=endpoints,
+        resolve_timeouts={str(k): int(v) for k, v in rt.items()},
     )

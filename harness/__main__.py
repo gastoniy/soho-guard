@@ -2,9 +2,12 @@
 
   python -m harness [--config harness.yml] run <manifest> [--target R] [--repeat N] [--offset S]
                                                 [--seed N] [--close-artifacts]
+  python -m harness [--config harness.yml] pair <dyn-manifest> <ctl-manifest> [--offset S]
+                                                [--seed N] [--close-artifacts] [--operator-checks F]
   python -m harness [--config harness.yml] gate <router> [--dump-objects]
   python -m harness [--config harness.yml] reset <router> --yes
   python -m harness [--config harness.yml] campaign <plan.yml> [--seed N] [--check]
+                                                [--operator-checks F]
   python -m harness summary <wynik.json|katalog|kampania.json>... [--csv F] [--agg-csv F]
 
 Kody wyjścia: 0 wszystkie `pass` (gate: zgodna); 1 co najmniej jeden `fail`/`timeout`;
@@ -29,9 +32,10 @@ from .artifacts import GitHub
 from . import campaign as campaign_mod
 from . import summary as summary_mod
 from .reset import run_reset
-from .results import new_run_id, write, write_reset
+from .results import new_run_id, write, write_pair, write_reset
 from .router import Ansible, Ssh
 from .scenario import Context, run_scenario
+from .pair import load_operator_checks, run_pair
 from .sitelab import SiteLab
 from .timing import Clock
 
@@ -51,6 +55,15 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--seed", type=int, help="ziarno losowania przesunięcia (powtarzalność)")
     r.add_argument("--close-artifacts", action="store_true",
                    help="zamknij PR/issue agenta z tego przebiegu (H9; domyślnie tylko odczyt)")
+    pr = sub.add_parser("pair", help="skoordynowany przebieg pary DYN-011b + CTL-001 (iteracja 5)")
+    pr.add_argument("dynamic", type=Path, help="manifest dynamiczny z detekcją (DYN-011b)")
+    pr.add_argument("control", type=Path, help="manifest control bez detekcji (CTL-001)")
+    pr.add_argument("--offset", type=float, help="stałe przesunięcie apply względem siatki cyklu [s]")
+    pr.add_argument("--seed", type=int, help="ziarno losowania przesunięcia (powtarzalność)")
+    pr.add_argument("--close-artifacts", action="store_true",
+                    help="zamknij PR/issue agenta z tego przebiegu (H9; domyślnie tylko odczyt)")
+    pr.add_argument("--operator-checks", type=Path,
+                    help="YAML z check-rita-dyn011b.sh (warunki startu; cel ruchu)")
     g = sub.add_parser("gate", help="bramka H5: czy router jest w baseline")
     g.add_argument("router")
     g.add_argument("--dump-objects", action="store_true",
@@ -66,11 +79,24 @@ def _parser() -> argparse.ArgumentParser:
     c.add_argument("--seed", type=int, help="ziarno losowania przesunięć (powtarzalność)")
     c.add_argument("--check", action="store_true",
                    help="tylko walidacja planu i lista kroków, bez działań na routerach")
+    c.add_argument("--operator-checks", type=Path,
+                   help="YAML z check-rita-dyn011b.sh dla kroku pary (plan z jednym krokiem pary)")
     s = sub.add_parser("summary", help="zestawienie wyników (Markdown, opcjonalnie CSV)")
     s.add_argument("paths", type=Path, nargs="+")
     s.add_argument("--csv", type=Path, help="CSV: wiersz na przebieg")
     s.add_argument("--agg-csv", type=Path, help="CSV: agregaty per manifest × router")
     return p
+
+
+def terminal_prompt(text: str) -> None:
+    """Potwierdzenie operatora (generate.from=client): komunikat na stderr, czekanie na Enter."""
+    log.info("czekam na operatora: %s", text)
+    print(f"\n>>> {text}", file=sys.stderr, flush=True)
+    try:
+        input()
+    except EOFError:
+        raise HarnessError("brak terminala do potwierdzenia operatora (stdin zamknięty)") from None
+    log.info("operator potwierdził")
 
 
 def build_context(cfg: config_mod.Config, seed: int | None) -> Context:
@@ -85,6 +111,7 @@ def build_context(cfg: config_mod.Config, seed: int | None) -> Context:
         seed=seed,
         ssh=Ssh(cfg),
         github=GitHub(cfg.gh_bin, cfg.site_lab_clone),
+        prompt=terminal_prompt,
     )
 
 
@@ -120,6 +147,30 @@ def cmd_run(args, ctx: Context) -> int:
     return code
 
 
+def cmd_pair(args, ctx: Context) -> int:
+    checks = load_operator_checks(args.operator_checks) if args.operator_checks else None
+    run_id = new_run_id(ctx.clock.now())
+    with run_log(ctx.cfg.results_dir, run_id):
+        log.info("pair %s: %s + %s, seed=%s", run_id, args.dynamic, args.control, ctx.seed)
+        res = run_pair(ctx, args.dynamic, args.control, offset_s=args.offset,
+                       close_artifacts=args.close_artifacts, run_id=run_id,
+                       operator_checks=checks)
+        path = write_pair(res, ctx.cfg.results_dir)
+    td_ok = res["teardown"]["ok"] is not False
+    m = res["dynamic"].get("metrics") or {}
+    print(f"pair {res['pair']['dynamic_id']}+{res['pair']['control_id']}: {res['verdict']}"
+          f" (dynamic={res['dynamic']['verdict']}, control={res['control']['verdict']})"
+          + (f" mttd={m['mttd_s']}s" if m.get("mttd_s") is not None else "")
+          + ("" if td_ok else " TEARDOWN-NIEZGODNY") + f" → {path}")
+    for reason in res["reasons"]:
+        print(f"    {reason}")
+    if not td_ok:
+        print(f"    teardown: {res['teardown']['error']}")
+    if res["verdict"] in ("invalid", "error") or not td_ok or res.get("interrupted"):
+        return EXIT_ABORT
+    return EXIT_FAIL if res["verdict"] in ("fail", "timeout") else EXIT_OK
+
+
 def cmd_reset(args, ctx: Context) -> int:
     if not args.yes:
         raise UsageError("reset kasuje całą konfigurację routera — potwierdź opcją --yes")
@@ -146,11 +197,17 @@ def cmd_reset(args, ctx: Context) -> int:
 
 def cmd_campaign(args, ctx: Context) -> int:
     plan = campaign_mod.load_plan(args.plan, ctx.cfg)
+    checks = load_operator_checks(args.operator_checks) if args.operator_checks else None
+    n_pairs = sum(st["repeat"] for st in plan["steps"] if st["control_path"] is not None)
+    if checks is not None and n_pairs != 1:
+        raise UsageError(f"--operator-checks wymaga planu z dokładnie jednym przebiegiem pary "
+                         f"(jest {n_pairs}) — każdy przebieg ma własny cel i odczyt z węzła")
     total = sum(st["repeat"] for st in plan["steps"])
     print(f"kampania {plan['campaign_id']}: reset na starcie {plan['reset_at_start'] or '—'}, "
           f"{len(plan['steps'])} kroków, {total} przebiegów, close_artifacts={plan['close_artifacts']}")
     for st in plan["steps"]:
-        print(f"  {st['index']}. {st['id']} {st['target']} ×{st['repeat']}"
+        print(f"  {st['index']}. {st['id']}" + (f"+{st['control_id']}" if st["control_path"] else "")
+              + f" {st['target']} ×{st['repeat']}"
               + (f" offset={st['offset']}" if st["offset"] is not None else ""))
     for w in plan["order_warnings"]:
         print(f"  ostrzeżenie: {w}")
@@ -158,7 +215,7 @@ def cmd_campaign(args, ctx: Context) -> int:
         return EXIT_OK
     run_id = new_run_id(ctx.clock.now())
     with run_log(ctx.cfg.results_dir, run_id):
-        summary = campaign_mod.run_campaign(ctx, plan, run_id)
+        summary = campaign_mod.run_campaign(ctx, plan, run_id, operator_checks=checks)
     counts = ", ".join(f"{k}={v}" for k, v in sorted(summary["counts"].items())) or "brak przebiegów"
     print(f"kampania {plan['campaign_id']} ({run_id}): {counts}")
     for r in summary["resets"]:
@@ -171,7 +228,7 @@ def cmd_campaign(args, ctx: Context) -> int:
 
 
 def cmd_summary(args) -> int:
-    rows = [summary_mod.run_row(d) for d in summary_mod.collect(args.paths)]
+    rows = [r for d in summary_mod.collect(args.paths) for r in summary_mod.run_rows(d)]
     if not rows:
         raise UsageError("brak wyników przebiegów we wskazanych ścieżkach")
     aggs = summary_mod.aggregate(rows)
@@ -227,6 +284,8 @@ def main(argv: list[str] | None = None, context_factory=build_context) -> int:
         ctx = context_factory(cfg, getattr(args, "seed", None))
         if args.cmd == "run":
             return cmd_run(args, ctx)
+        if args.cmd == "pair":
+            return cmd_pair(args, ctx)
         if args.cmd == "gate":
             return cmd_gate(args, ctx)
         if args.cmd == "reset":

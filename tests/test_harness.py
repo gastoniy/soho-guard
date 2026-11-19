@@ -24,7 +24,7 @@ from harness import __main__ as cli
 from harness import campaign as campaign_mod
 from harness import config as config_mod
 from harness import summary as summary_mod
-from harness import artifacts, gate, generate, probes, reset, results, scenario, sitelab, timing
+from harness import artifacts, gate, generate, pair, probes, reset, results, scenario, sitelab, timing
 from harness.config import Config, RouterCfg, TimingCfg
 from harness.router import Ansible, Ssh
 from harness.scenario import Context, run_scenario
@@ -823,11 +823,60 @@ def test_diff_export_ignores_header_and_crlf_but_not_error_lines():
     actual = "# inna data\r\n# software id =\r\n#\r\n" + EXPORT_PATTERN.split("\n", 3)[3].replace("\n", "\r\n")
     assert gate.diff_export(actual, EXPORT_PATTERN) == []
     new_err = actual + "#error exporting /interface bridge calea\r\n"
-    assert gate.diff_export(new_err, EXPORT_PATTERN) == ["@@ -3,0 +4 @@",       # numeracja treści
+    assert gate.diff_export(new_err, EXPORT_PATTERN) == ["@@ # @@",
                                                          "+#error exporting /interface bridge calea"]
     changed = actual.replace("enabled=no", "enabled=yes")
     d = gate.diff_export(changed, EXPORT_PATTERN)
     assert "-/ip socks set enabled=no" in d and "+/ip socks set enabled=yes" in d
+
+
+GATE_R1_PATTERN = """# header
+/ip pool add comment=BL name=pool-users ranges=10.200.1.100-10.200.1.199
+/port set 0 name=serial0
+/ip firewall filter add action=accept chain=input comment="BL: in icmp" protocol=icmp
+/ip firewall filter add action=drop chain=input comment="BL: in drop all"
+/ip address add address=10.200.1.1/24 comment=BL interface=vlan-users network=10.200.1.0
+/ip dhcp-server add address-pool=pool-users comment=BL interface=vlan-users lease-time=1h name=dhcp-users
+/system identity set name=r1
+"""
+
+
+def test_diff_export_ignores_menu_block_order():
+    """RouterOS 7 przestawia blok /ip dhcp-server po pierwszej dzierżawie (lab 2026-11-18)."""
+    lines = GATE_R1_PATTERN.splitlines()
+    dhcp = lines.pop(6)
+    moved = "\n".join(lines[:2] + [dhcp] + lines[2:]) + "\n"
+    assert gate.diff_export(moved, GATE_R1_PATTERN) == []
+
+
+def test_diff_export_keeps_order_inside_menu():
+    lines = GATE_R1_PATTERN.splitlines()
+    lines[3], lines[4] = lines[4], lines[3]               # zamiana kolejności reguł firewalla
+    d = gate.diff_export("\n".join(lines) + "\n", GATE_R1_PATTERN)
+    assert d and d[0] == "@@ /ip firewall filter @@"
+    assert gate.GateResult(ok=False, export_diff=d).summary().startswith("bramka niezgodna: eksport 2")
+
+
+def test_diff_export_content_change_and_new_menu():
+    changed = GATE_R1_PATTERN.replace("lease-time=1h", "lease-time=10m") + \
+        "/ip socks set enabled=yes\n"
+    d = gate.diff_export(changed, GATE_R1_PATTERN)
+    assert d[:3] == ["@@ /ip dhcp-server @@",
+                     "-/ip dhcp-server add address-pool=pool-users comment=BL interface=vlan-users "
+                     "lease-time=1h name=dhcp-users",
+                     "+/ip dhcp-server add address-pool=pool-users comment=BL interface=vlan-users "
+                     "lease-time=10m name=dhcp-users"]
+    assert d[3:] == ["@@ /ip socks @@", "+/ip socks set enabled=yes"]
+    missing = GATE_R1_PATTERN.replace("/system identity set name=r1\n", "")
+    assert gate.diff_export(missing, GATE_R1_PATTERN) == ["@@ /system identity @@",
+                                                          "-/system identity set name=r1"]
+
+
+def test_menu_of():
+    assert gate.menu_of("/ip firewall filter add chain=input") == "/ip firewall filter"
+    assert gate.menu_of('/interface ethernet set [ find default-name=ether1 ] comment="BL: WAN"') \
+        == "/interface ethernet"
+    assert gate.menu_of("#error exporting /ip firewall calea") == "#"
 
 
 def test_objects_projection_roundtrip_and_diff():
@@ -2029,6 +2078,7 @@ def test_generate_router_requires_job(tmp_path):
         generate.run_generate(ctx, {"id": "DYN-011a", "generate":
                               {"from": "router", "to_endpoint": "c2-lab", "behavior": "x"}},
                               ctx.cfg.router("r1"), "192.0.2.60")
+    assert generate.stop_generate(ctx, {"generate": {"from": "router"}}, "r1") is None
 
 
 def test_config_endpoints_parsed(tmp_path):
@@ -2041,3 +2091,326 @@ def test_config_endpoints_parsed(tmp_path):
     p.write_text(yaml.safe_dump(doc), encoding="utf-8")
     with pytest.raises(UsageError, match="addresses"):
         config_mod.load(p)
+
+
+
+
+def test_config_resolve_timeouts(tmp_path):
+    doc = yaml.safe_load((REPO_ROOT / "harness" / "harness.example.yml").read_text(encoding="utf-8"))
+    p = tmp_path / "harness.yml"
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    cfg = config_mod.load(p)
+    assert cfg.resolve_timeout("DYN-011b") == 93600
+    assert cfg.resolve_timeout("DYN-011a") == cfg.timing.resolve_timeout_s
+    doc["resolve_timeouts"] = {"DYN-011b": 0}
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(UsageError, match="resolve_timeouts"):
+        config_mod.load(p)
+    doc["resolve_timeouts"] = {}
+    doc["endpoints"]["c2-lab"]["port"] = 80
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(UsageError, match="nieznane klucze endpoints"):
+        config_mod.load(p)
+
+
+# ------------------------------------------------------------- iteracja 5: para DYN-011b + CTL-001
+DYN011B = REPO_ROOT / "scenarios" / "dynamic" / "dynamic-c2-beacon.yml"
+CTL001 = REPO_ROOT / "scenarios" / "control" / "control-l2-attribution.yml"
+BEACON_RULE = "policy.dynamic.beacon"
+DETECT_AFTER_S = 39600                  # ok. 11 h ruchu → beacon_score > 0.7 (krzywa RITA)
+
+
+class FakePrompt:
+    """Potwierdzenia operatora w terminalu; `fail` = numery wywołań (od 1), które zawodzą."""
+
+    def __init__(self, clock, fail=()):
+        self.clock, self.fail = clock, set(fail)
+        self.calls: list[tuple[datetime, str]] = []
+
+    def __call__(self, text):
+        self.calls.append((self.clock.now(), text))
+        if len(self.calls) in self.fail:
+            raise HarnessError("brak terminala do potwierdzenia operatora (stdin zamknięty)")
+
+
+def pair_ctx(tmp_path, github=None, prompt_fail=(), **timing_over):
+    timing_over.setdefault("poll_interval_s", 600)       # 11 h symulacji bez tysięcy git fetch
+    repo, clock, ans, ctx = dyn_ctx(tmp_path, github=github, **timing_over)
+    ctx.cfg = Config(**{**ctx.cfg.__dict__, "resolve_timeouts": {"DYN-011b": 9000}})
+    ctx.prompt = FakePrompt(clock, prompt_fail)
+    return repo, clock, ans, ctx
+
+
+def checks_doc(clock, **over):
+    doc = {"checked_at": ts(clock.now() - timedelta(minutes=10)), "target": "192.0.2.61",
+           "wan": "192.0.2.21", "dataset_window_h": 24.0, "import_age_s": 1500,
+           "target_conns_26h": 0}
+    doc.update(over)
+    return doc
+
+
+def _patch_reset(monkeypatch, calls=None):
+    def fake(c, rid, run_id):
+        if calls is not None:
+            calls.append(rid)
+        return {"ok": True, "error": None, "interrupted": False,
+                "gate": {"ok": True, "export_diff": [], "objects_diff": []}}
+    monkeypatch.setattr(pair, "run_reset", fake)
+    monkeypatch.setattr(pair, "write_reset", lambda res, d: Path("reset.json"))
+
+
+def _r2_heartbeat(repo, when, seq):
+    st = state_doc(router_id="r2",
+                   last_run={"run_id": f"01M7R2HB{seq:016d}", "run_seq": seq, "finished_at": ts(when)})
+    repo.commit_state(st, when, f"agent(r2): heartbeat {seq}", router="r2")
+
+
+def _r1_beacon(repo, when, rid="01M7BEACON00000000000000B"):
+    st = state_doc(router_id="r1", posture="compromise-suspected",
+                   open_findings=[{"rule": BEACON_RULE, "fingerprint": f"sha256:{rid}"}])
+    repo.commit_state(st, when, "agent(r1): beacon", router="r1",
+                      report=dyn_report(BEACON_RULE, when, rid, 9, "compromise-suspected",
+                                        "universal", "dynamic", "alert"))
+
+
+def test_pair_pass(tmp_path, monkeypatch):
+    gh = FakeGitHub()
+    repo, clock, ans, ctx = pair_ctx(tmp_path, github=gh)
+    resets = []
+    _patch_reset(monkeypatch, resets)
+    t0 = T_START + timedelta(seconds=40)                 # grid 10:00:00 + offset 100
+    beacon_at = t0 + timedelta(seconds=DETECT_AFTER_S)
+    r2_after = beacon_at + timedelta(seconds=700)        # ≥ 2 cykle po wykryciu (D-B4)
+    resolved_at = r2_after + timedelta(seconds=7000)     # > 5400 (globalne), < 9000 (DYN-011b)
+    rid = "01M7BEACON00000000000000B"
+    clock.at(t0 + timedelta(seconds=600), lambda: _r2_heartbeat(repo, t0 + timedelta(seconds=600), 1430))
+    clock.at(beacon_at, lambda: _r1_beacon(repo, beacon_at, rid))
+    clock.at(r2_after, lambda: _r2_heartbeat(repo, r2_after, 1560))
+    clock.at(resolved_at, lambda: repo.commit_state(state_doc(router_id="r1"), resolved_at,
+                                                    "agent(r1): resolved", router="r1"))
+    gh.issues = [{"number": 87, "state": "OPEN", "body": f"reports/r1/2026/11/000009-{rid}.json"}]
+
+    res = pair.run_pair(ctx, DYN011B, CTL001, offset_s=100, close_artifacts=True,
+                        operator_checks=checks_doc(clock))
+
+    assert res["verdict"] == "pass", res["reasons"]
+    assert (res["dynamic"]["verdict"], res["control"]["verdict"]) == ("pass", "pass")
+    assert res["operator_checks"]["provided"] is True and res["operator_checks"]["violations"] == []
+    g = res["generate"]
+    assert g["from"] == "client" and g["control"] == "operator"
+    assert g["target"] == "192.0.2.61"                   # cel z operator_checks, nie pool[0]
+    assert res["timing"]["t0"] == ts(t0) == g["started_at"]
+    assert res["dynamic"]["metrics"]["mttd_s"] == float(DETECT_AFTER_S)
+    assert res["dynamic"]["side_effects"] is None        # klient: r1 bez zmian konfiguracji
+    assert ans.extras == []                              # apply: none — żadnego playbooka
+    # potwierdzenia: start (t0) i stop po zamknięciu okna r2
+    (start_at, start_txt), (stop_at, stop_txt) = ctx.prompt.calls
+    assert start_at == t0 and "192.0.2.61" in start_txt and "uruchom" in start_txt
+    assert "zatrzymaj" in stop_txt and stop_at >= r2_after
+    assert g["stop"]["confirmed"] is True
+    # CTL-001: okno od wykrycia na r1 do commitu r2 ≥ 2 cykle później
+    w = res["control"]["window"]
+    assert w["closed_by"] == "detection+2" and w["since"] == ts(beacon_at) and w["cycles_after"] >= 2
+    # teardown: reset r1 i r2 (teardown.reset obu manifestów) + rozwiązanie w 9000 s
+    assert resets == ["r1", "r2"]
+    assert res["teardown"]["revert"] == "skipped"
+    assert res["teardown"]["resolved"]["ok"] is True
+    assert res["teardown"]["ok"] is True
+    assert ("issue", 87) in {(k, n) for k, n, _ in gh.closed}
+
+
+def test_pair_young_dataset_is_invalid_before_start(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = pair_ctx(tmp_path)
+    _patch_reset(monkeypatch)
+    res = pair.run_pair(ctx, DYN011B, CTL001, offset_s=100,
+                        operator_checks=checks_doc(clock, dataset_window_h=6.5, target_conns_26h=3))
+    assert res["verdict"] == "invalid"
+    assert any("okno zbioru RITA 6.5 h" in r for r in res["reasons"])
+    assert any("192.0.2.61: 3 połączeń" in r for r in res["reasons"])
+    assert ctx.prompt.calls == []                        # ruch nie startował
+    assert res["teardown"]["ok"] is None
+
+
+def test_pair_stale_operator_checks(tmp_path):
+    repo, clock, ans, ctx = pair_ctx(tmp_path)
+    old = checks_doc(clock, checked_at=ts(clock.now() - timedelta(hours=5)))
+    assert any("sprzed" in e for e in pair.evaluate_checks(old, clock.now()))
+
+
+def test_pair_checks_target_outside_pool(tmp_path):
+    repo, clock, ans, ctx = pair_ctx(tmp_path)
+    with pytest.raises(UsageError, match="spoza endpoints.c2-lab"):
+        pair.run_pair(ctx, DYN011B, CTL001, offset_s=100,
+                      operator_checks=checks_doc(clock, target="198.51.100.9"))
+
+
+def test_load_operator_checks(tmp_path):
+    p = tmp_path / "checks.yml"
+    p.write_text(yaml.safe_dump({"operator_checks": {
+        "checked_at": "2026-11-18T20:00:00Z", "target": "192.0.2.61", "dataset_window_h": 24,
+        "import_age_s": 900, "target_conns_26h": 0}}), encoding="utf-8")
+    assert pair.load_operator_checks(p)["target"] == "192.0.2.61"
+    p.write_text(yaml.safe_dump({"target": "192.0.2.61", "extra": 1}), encoding="utf-8")
+    with pytest.raises(UsageError, match="nieznane klucze \\['extra'\\]"):
+        pair.load_operator_checks(p)
+
+
+def test_pair_start_not_confirmed_still_asks_for_stop(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = pair_ctx(tmp_path, prompt_fail={1})
+    resets = []
+    _patch_reset(monkeypatch, resets)
+    res = pair.run_pair(ctx, DYN011B, CTL001, offset_s=100, operator_checks=checks_doc(clock))
+    assert res["verdict"] == "error"
+    assert "potwierdzenia" in res["reasons"][0]
+    assert len(ctx.prompt.calls) == 2                    # start (nieudany) + stop w teardownie
+    assert res["generate"]["stop"]["confirmed"] is True
+    assert resets == ["r1", "r2"]
+
+
+def test_pair_ctrl_c_stops_traffic(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = pair_ctx(tmp_path)
+    _patch_reset(monkeypatch)
+    t0 = T_START + timedelta(seconds=40)
+
+    def interrupt():
+        raise KeyboardInterrupt
+    clock.at(t0 + timedelta(seconds=3600), interrupt)
+    res = pair.run_pair(ctx, DYN011B, CTL001, offset_s=100, operator_checks=checks_doc(clock))
+    assert res["verdict"] == "error" and res["interrupted"] is True
+    assert "zatrzymaj" in ctx.prompt.calls[-1][1]
+    assert res["generate"]["stop"]["confirmed"] is True
+
+
+def test_pair_stop_not_confirmed_skips_resolution(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = pair_ctx(tmp_path, prompt_fail={2})
+    _patch_reset(monkeypatch)
+    t0 = T_START + timedelta(seconds=40)
+    beacon_at = t0 + timedelta(seconds=DETECT_AFTER_S)
+    clock.at(beacon_at, lambda: _r1_beacon(repo, beacon_at))
+    clock.at(beacon_at + timedelta(seconds=700),
+             lambda: _r2_heartbeat(repo, beacon_at + timedelta(seconds=700), 1560))
+    res = pair.run_pair(ctx, DYN011B, CTL001, offset_s=100, operator_checks=checks_doc(clock))
+    assert res["verdict"] == "pass"                      # teardown nie zmienia werdyktu
+    assert res["generate"]["stop"]["confirmed"] is False
+    assert res["teardown"]["ok"] is False
+    assert "niepotwierdzone" in res["teardown"]["error"]
+    assert res["teardown"]["resolved"] is None
+
+
+def test_pair_control_contaminated(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = pair_ctx(tmp_path)
+    _patch_reset(monkeypatch)
+    t0 = T_START + timedelta(seconds=40)
+    beacon_at = t0 + timedelta(seconds=DETECT_AFTER_S)
+    leak_at = beacon_at + timedelta(seconds=700)
+
+    def fire_leak():                       # r2 też dostaje beacon → atrybucja przeciekła
+        st = state_doc(router_id="r2", posture="compromise-suspected",
+                       open_findings=[{"rule": BEACON_RULE, "fingerprint": "sha256:l"}],
+                       last_run={"run_id": "01M7R2LEAK", "run_seq": 1560, "finished_at": ts(leak_at)})
+        repo.commit_state(st, leak_at, "agent(r2): beacon LEAK", router="r2",
+                          report=dyn_report(BEACON_RULE, leak_at, "01M7L2", 1560,
+                                            "compromise-suspected", "universal", "dynamic", "alert"))
+    clock.at(beacon_at, lambda: _r1_beacon(repo, beacon_at))
+    clock.at(leak_at, fire_leak)
+    res = pair.run_pair(ctx, DYN011B, CTL001, offset_s=100, operator_checks=checks_doc(clock))
+    assert res["dynamic"]["verdict"] == "pass"
+    assert res["control"]["verdict"] == "fail"
+    assert res["verdict"] == "fail"
+    assert any(r.startswith("control:") for r in res["reasons"])
+
+
+def test_pair_beacon_timeout(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = pair_ctx(tmp_path, report_grace_s=0)
+    _patch_reset(monkeypatch)
+    t0 = T_START + timedelta(seconds=40)
+    clock.at(t0 + timedelta(seconds=600), lambda: _r2_heartbeat(repo, t0 + timedelta(seconds=600), 1430))
+    clock.at(t0 + timedelta(seconds=2400), lambda: _r2_heartbeat(repo, t0 + timedelta(seconds=2400), 1437))
+    res = pair.run_pair(ctx, DYN011B, CTL001, offset_s=100, operator_checks=checks_doc(clock))
+    assert res["dynamic"]["verdict"] == "timeout"
+    assert res["verdict"] == "timeout"
+    assert res["timing"]["deadline"] == ts(t0 + timedelta(seconds=50400))
+    assert res["control"]["window"]["closed_by"] == "dynamic-timeout"
+    assert res["teardown"]["ok"] is True                 # stop + reset + rozwiązanie mimo timeoutu
+
+
+def test_pair_control_window_timeout(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = pair_ctx(tmp_path)
+    _patch_reset(monkeypatch)
+    t0 = T_START + timedelta(seconds=40)
+    beacon_at = t0 + timedelta(seconds=DETECT_AFTER_S)
+    clock.at(beacon_at, lambda: _r1_beacon(repo, beacon_at))      # r2 nie commituje po wykryciu
+    res = pair.run_pair(ctx, DYN011B, CTL001, offset_s=100, operator_checks=checks_doc(clock))
+    assert res["dynamic"]["verdict"] == "pass"
+    assert res["control"]["verdict"] == "timeout"
+    assert res["verdict"] == "timeout"
+
+
+def test_pair_rejects_swapped_manifests(tmp_path):
+    repo, clock, ans, ctx = pair_ctx(tmp_path)
+    with pytest.raises(UsageError, match="dynamiczny z detekcją"):
+        pair.run_pair(ctx, CTL001, DYN011B, offset_s=100)       # control w roli dynamic
+
+
+def test_run_scenario_client_stops_traffic_in_teardown(tmp_path, monkeypatch):
+    repo, clock, ans, ctx = pair_ctx(tmp_path, report_grace_s=0)
+    monkeypatch.setattr(scenario, "run_reset", lambda c, rid, run_id: {
+        "ok": True, "error": None, "interrupted": False,
+        "gate": {"ok": True, "export_diff": [], "objects_diff": []}})
+    monkeypatch.setattr(scenario, "write_reset", lambda res, d: Path("reset.json"))
+    res = run_scenario(ctx, DYN011B, offset_s=100)
+    assert res["verdict"] == "timeout"
+    assert [("uruchom" in t, "zatrzymaj" in t) for _, t in ctx.prompt.calls] == \
+        [(True, False), (False, True)]
+    assert res["generate"]["stop"]["confirmed"] is True
+
+
+def test_campaign_pair_step(lab, tmp_path, monkeypatch):
+    repo, clock, ans, ctx = lab
+    ctx.cfg = Config(**{**ctx.cfg.__dict__, "endpoints": {"c2-lab": ("192.0.2.61",)},
+                        "build_dir": tmp_path, "ssh_known_hosts": tmp_path / "kh",
+                        "routers": {r: RouterCfg(r, c.mgmt_address, c.vault_file,
+                                                 upload={"x": tmp_path / "x"})
+                                    for r, c in ctx.cfg.routers.items()}})
+    plan = campaign_mod.load_plan(REPO_ROOT / "harness" / "campaigns" / "dyn-011b.yml", ctx.cfg)
+    st = plan["steps"][0]
+    assert (st["id"], st["control_id"], st["target"], st["repeat"]) == ("DYN-011b", "CTL-001", "r1", 1)
+    seen = {}
+
+    def fake_pair(c, dyn, ctl, offset_s=None, close_artifacts=False, run_id=None,
+                  operator_checks=None):
+        seen.update(checks=operator_checks, close=close_artifacts)
+        return {"kind": "pair", "run_id": run_id, "verdict": "pass", "reasons": [],
+                "pair": {"dynamic_id": "DYN-011b", "control_id": "CTL-001"},
+                "dynamic": {"metrics": {"mttd_s": 39660.0}}, "teardown": {"ok": True}}
+    monkeypatch.setattr(campaign_mod, "run_pair", fake_pair)
+    summary = campaign_mod.run_campaign(ctx, plan, "hCAMP", operator_checks={"target": "192.0.2.61"})
+    assert summary["aborted"] is None
+    assert seen == {"checks": {"target": "192.0.2.61"}, "close": True}
+    (row,) = summary["runs"]
+    assert (row["manifest_id"], row["verdict"], row["mttd_s"]) == ("DYN-011b+CTL-001", "pass", 39660.0)
+    assert row["path"].endswith("-pair-DYN-011b-CTL-001.json")
+
+
+@pytest.mark.parametrize("step, needle", [
+    ({"control": "scenarios/control/control-l2-attribution.yml", "repeat": 2}, "repeat musi być 1"),
+    ({"control": "scenarios/control/control-l2-attribution.yml", "target": "r2"}, "nie przyjmuje target"),
+    ({"control": "scenarios/policy/policy-socks-enabled.yml"}, "para wymaga"),
+])
+def test_campaign_pair_step_errors(lab, tmp_path, step, needle):
+    repo, clock, ans, ctx = lab
+    ctx.cfg = Config(**{**ctx.cfg.__dict__, "endpoints": {"c2-lab": ("192.0.2.61",)}})
+    with pytest.raises(UsageError, match=needle):
+        campaign_mod.load_plan(write_plan(tmp_path, campaign_id="p", steps=[
+            {"manifest": "scenarios/dynamic/dynamic-c2-beacon.yml", **step}]), ctx.cfg)
+
+
+def test_summary_pair_rows():
+    doc = {"kind": "pair", "run_id": "hP", "verdict": "pass", "started_at": "2026-11-18T20:00:00Z",
+           "manifest": {"dynamic": {"id": "DYN-011b"}, "control": {"id": "CTL-001"}},
+           "timing": {"t0_grid_offset_s": 100.0}, "teardown": {"ok": True},
+           "dynamic": {"router_id": "r1", "verdict": "pass", "metrics": {"mttd_s": 39660.0}},
+           "control": {"router_id": "r2", "verdict": "pass"}}
+    rows = summary_mod.run_rows(doc)
+    assert [(r["manifest_id"], r["router_id"], r["verdict"], r["mttd_s"]) for r in rows] == \
+        [("DYN-011b", "r1", "pass", 39660.0), ("CTL-001", "r2", "pass", None)]

@@ -1,7 +1,8 @@
 """Zestawienie wyników przebiegów (rozdział 8): wiersz na przebieg + agregaty per manifest × router.
 
 Wejście: pliki JSON przebiegów, katalogi z nimi albo wynik zbiorczy kampanii (wtedy jego przebiegi,
-pliki szukane obok). Wyniki resetów i kampanii jako wiersze są pomijane. Wyjście: Markdown na stdout,
+pliki szukane obok). Wynik pary (DYN-011b + CTL-001) daje dwa wiersze — po jednym na ramię.
+Wyniki resetów i kampanii jako wiersze są pomijane. Wyjście: Markdown na stdout,
 opcjonalnie CSV przebiegów i agregatów.
 """
 from __future__ import annotations
@@ -33,7 +34,7 @@ def collect(paths: list[Path]) -> list[dict]:
     docs: dict[str, dict] = {}
 
     def add(doc):
-        if doc.get("kind") in (None, "scenario") and "manifest" in doc:
+        if doc.get("kind") in (None, "scenario", "pair") and "manifest" in doc:
             docs[doc["run_id"]] = doc
 
     for p in paths:
@@ -69,6 +70,29 @@ def run_row(doc: dict) -> dict:
         "teardown_ok": (doc.get("teardown") or {}).get("ok"),
         "started_at": doc.get("started_at"),
     }
+
+
+def run_rows(doc: dict) -> list[dict]:
+    """Wiersze przebiegu: scenariusz → jeden; para → ramię dynamic (MTTD) i control."""
+    if doc.get("kind") != "pair":
+        return [run_row(doc)]
+    out = []
+    for arm in ("dynamic", "control"):
+        a = doc[arm]
+        m = a.get("metrics") or {}
+        out.append({
+            "run_id": doc["run_id"],
+            "campaign": (doc.get("campaign") or {}).get("id", ""),
+            "manifest_id": doc["manifest"][arm]["id"],
+            "router_id": a["router_id"],
+            "verdict": a.get("verdict") or doc["verdict"],
+            "mttd_s": m.get("mttd_s"), "notify_s": m.get("notify_s"),
+            "remediate_s": m.get("remediate_s"), "window_s": None,
+            "t0_grid_offset_s": (doc.get("timing") or {}).get("t0_grid_offset_s"),
+            "teardown_ok": (doc.get("teardown") or {}).get("ok"),
+            "started_at": doc.get("started_at"),
+        })
+    return out
 
 
 def _p90(xs: list[float]) -> float:

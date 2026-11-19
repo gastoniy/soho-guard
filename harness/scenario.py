@@ -22,6 +22,7 @@ import sys
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import Callable
 
 import yaml
 
@@ -60,6 +61,8 @@ class Context:
     seed: int | None = None     # ziarno rng (zapisywane w wyniku — powtarzalność przesunięć)
     ssh: Ssh | None = None
     github: artifacts_mod.GitHub | None = None
+    # potwierdzenie operatora w terminalu (generate.from=client: start/stop ruchu na kliencie)
+    prompt: Callable[[str], None] | None = None
 
 
 def load_manifest(path: Path) -> dict:
@@ -409,6 +412,8 @@ def run_scenario(ctx: Context, manifest_path: Path, target: str | None = None,
         return res
 
     finally:
+        if applied and has_generate:
+            _stop_generate(ctx, m, router_id, res)
         if applied:
             if has_generate and (m.get("teardown") or {}).get("reset"):
                 _teardown_dynamic(ctx, m, rcfg, router_id, sha_before, site_doc, res, extra)
@@ -484,7 +489,7 @@ def _teardown_dynamic(ctx, m, rcfg, router_id, sha_before, site_doc, res, extra)
         td.update(ok=False, error=f"pełny reset niezgodny: {reset['error']}")
         return
 
-    resolved, why = _wait_resolved(ctx, router_id)
+    resolved, why = _wait_resolved(ctx, router_id, ctx.cfg.resolve_timeout(m["id"]))
     td["resolved"] = resolved
     td["ok"] = resolved["ok"]
     if not resolved["ok"]:
@@ -492,10 +497,24 @@ def _teardown_dynamic(ctx, m, rcfg, router_id, sha_before, site_doc, res, extra)
         log.error("teardown: %s", why)
 
 
-def _wait_resolved(ctx, router_id):
+def _stop_generate(ctx, m, router_id, res) -> None:
+    """Zatrzymanie ruchu generate przed resetem (teardown, także po błędzie i Ctrl-C)."""
+    gen = res.get("generate") or {}
+    try:
+        stop = generate_mod.stop_generate(ctx, m, router_id)
+    except HarnessError as e:
+        stop = {"confirmed": False, "error": str(e)}
+        log.error("teardown: zatrzymanie ruchu: %s", e)
+    if stop is not None:
+        gen["stop"] = stop
+        res["generate"] = gen
+
+
+def _wait_resolved(ctx, router_id, timeout_s: int | None = None):
     """Czeka, aż stan routera ma `open_findings == []` i `posture: no-violations` (okno dynamiczne
-    wygasło) do `timing.resolve_timeout_s`."""
-    deadline = ctx.clock.now() + timedelta(seconds=ctx.cfg.timing.resolve_timeout_s)
+    wygasło) do `timeout_s` (domyślnie `timing.resolve_timeout_s`)."""
+    timeout_s = timeout_s or ctx.cfg.timing.resolve_timeout_s
+    deadline = ctx.clock.now() + timedelta(seconds=timeout_s)
     while True:
         head = ctx.site.fetch()
         state = ctx.site.state(head, router_id)
@@ -508,7 +527,7 @@ def _wait_resolved(ctx, router_id):
         if remaining <= 0:
             rules = ", ".join(fd.get("rule", "?") for fd in of)
             return ({"ok": False, "open_findings": rules, "posture": posture},
-                    f"finding nierozwiązany w {ctx.cfg.timing.resolve_timeout_s} s: "
+                    f"finding nierozwiązany w {timeout_s} s: "
                     + (rules or f"posture {posture}"))
         ctx.clock.sleep(min(ctx.cfg.timing.poll_interval_s, remaining))
 

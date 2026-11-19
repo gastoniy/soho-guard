@@ -1,0 +1,15 @@
+# Kampania końcowa (Z-3, Z-4) — blok statyczny r2 (RouterOS 6), uruchamiany przed r1 (H8).
+# Każdy manifest statyczny ×3; POL-003 pominięty (ma już n = 11 i n = 14 z iteracji 1–3).
+# BEN-002 (okno H10 ok. 35–40 min) raz; dodatkowe przebiegi ręcznie (`run --target`).
+# Pełny reset r2 na starcie (H4), przesunięcie apply losowe (ziarno w wyniku; powtórzenie: --seed).
+campaign_id: static-final-r2
+description: "Kampania końcowa: POL-004/005/006, SITE-007/008 ×3 na r2, BEN-002 ×1"
+reset_at_start: [r2]
+close_artifacts: true
+steps:
+  - { manifest: scenarios/policy/policy-proxy-enabled.yml,     target: r2, repeat: 3 }  # POL-004
+  - { manifest: scenarios/policy/policy-api-plain-enabled.yml, target: r2, repeat: 3 }  # POL-005
+  - { manifest: scenarios/policy/policy-winbox-public.yml,     target: r2, repeat: 3 }  # POL-006 (D-A)
+  - { manifest: scenarios/site/site-ppp-secret.yml,            target: r2, repeat: 3 }  # SITE-007
+  - { manifest: scenarios/site/site-user-add.yml,              target: r2, repeat: 3 }  # SITE-008
+  - { manifest: scenarios/benign/benign-firewall-comment.yml,  target: r2, repeat: 1 }  # BEN-002

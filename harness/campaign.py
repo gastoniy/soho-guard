@@ -9,6 +9,7 @@ Plan:
   steps:
     - { manifest: scenarios/policy/policy-socks-enabled.yml, target: r2, repeat: 10 }
     - { manifest: …, target: r1, repeat: 1, offset: 100 }   # offset: stałe przesunięcie [s]
+    - { manifest: <dynamic>, control: <control> }          # para (iteracja 5): repeat 1, bez target
 
 Przerwanie kampanii (kod 3): nieudany reset, werdykt `invalid` lub `error`, Ctrl-C. Niezgodna bramka
 po teardownie: pełny reset routera i ponowna bramka (w resecie); zgodna → kampania idzie dalej
@@ -30,14 +31,16 @@ from . import REPO_ROOT, HarnessError, UsageError
 from .config import load_yaml_unique
 from .logs import run_log
 from .reset import run_reset
-from .results import RESULT_VERSION, harness_commit, new_run_id, write, write_campaign, write_reset
+from .pair import run_pair
+from .results import (RESULT_VERSION, harness_commit, new_run_id, write, write_campaign, write_pair,
+                      write_reset)
 from .scenario import load_manifest, run_scenario
 from .timing import check_offset, iso
 
 log = logging.getLogger("harness")
 
 PLAN_KEYS = {"campaign_id", "description", "reset_at_start", "close_artifacts", "steps"}
-STEP_KEYS = {"manifest", "target", "repeat", "offset"}
+STEP_KEYS = {"manifest", "target", "repeat", "offset", "control"}
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 # H8: statyka → BEN-001 → dynamika (DYN-011b razem z CTL-001)
 CLASS_RANK = {"policy": 0, "site": 0, "benign": 1, "dynamic": 2, "control": 2}
@@ -90,6 +93,21 @@ def load_plan(path: Path, cfg) -> dict:
             raise UsageError(f"{where}: nieznane klucze {unknown}")
         mpath = _resolve(str(st["manifest"]))
         m = load_manifest(mpath)
+        cpath = cm = None
+        if "control" in st:
+            # para: routery z manifestów; każdy przebieg = nowy cel i odczyt z węzła → repeat 1
+            if "target" in st or st.get("repeat", 1) != 1:
+                raise UsageError(f"{where}: krok pary nie przyjmuje target, a repeat musi być 1")
+            cpath = _resolve(str(st["control"]))
+            cm = load_manifest(cpath)
+            if cm["class"] != "control" or m["class"] != "dynamic":
+                raise UsageError(f"{where}: para wymaga manifest: dynamic i control: control")
+            if (cm.get("teardown") or {}).get("reset"):
+                t = cm["target"]["router_id"]
+                rc = cfg.router(t)
+                if not rc.upload or cfg.build_dir is None or cfg.ssh_known_hosts is None:
+                    raise UsageError(f"{where}: teardown {t} (pełny reset) wymaga w harness.yml "
+                                     f"build_dir, ssh.known_hosts i routers.{t}.upload")
         target = st.get("target") or m["target"]["router_id"]
         cfg.router(target)
         repeat = st.get("repeat", 1)
@@ -108,6 +126,7 @@ def load_plan(path: Path, cfg) -> dict:
                     raise UsageError(f"{where}: teardown {target} (pełny reset) wymaga w harness.yml "
                                      f"build_dir, ssh.known_hosts i routers.{target}.upload")
         steps.append({"index": i, "manifest_path": mpath, "manifest": str(st["manifest"]),
+                      "control_path": cpath, "control_id": cm["id"] if cm else None,
                       "id": m["id"], "class": m["class"], "target": target,
                       "repeat": repeat, "offset": None if offset is None else float(offset)})
     return {"campaign_id": cid, "description": doc.get("description"), "path": path,
@@ -146,7 +165,8 @@ def _new_summary(ctx, plan: dict, run_id: str) -> dict:
         "started_at": iso(ctx.clock.now()),
         "finished_at": None,
         "order_warnings": plan["order_warnings"],
-        "steps": [{k: s[k] for k in ("index", "manifest", "id", "target", "repeat", "offset")}
+        "steps": [{k: s[k] for k in ("index", "manifest", "id", "control_id", "target", "repeat",
+                                     "offset")}
                   for s in plan["steps"]],
         "resets": [],
         "runs": [],
@@ -189,7 +209,23 @@ def _save(ctx, summary: dict) -> Path:
     return write_campaign(summary, ctx.cfg.results_dir)
 
 
-def run_campaign(ctx, plan: dict, run_id: str) -> dict:
+def _run_pair_step(ctx, plan, st, rid, run_id, operator_checks):
+    res = run_pair(ctx, st["manifest_path"], st["control_path"], offset_s=st["offset"],
+                   close_artifacts=plan["close_artifacts"], run_id=rid,
+                   operator_checks=operator_checks)
+    res["campaign"] = {"id": plan["campaign_id"], "run_id": run_id, "step": st["index"],
+                       "index": 1, "of": 1}
+    path = write_pair(res, ctx.cfg.results_dir)
+    m = res["dynamic"].get("metrics") or {}
+    row = {"run_id": rid, "step": st["index"], "index": 1,
+           "manifest_id": f"{res['pair']['dynamic_id']}+{res['pair']['control_id']}",
+           "router_id": st["target"], "verdict": res["verdict"], "mttd_s": m.get("mttd_s"),
+           "window_s": None, "teardown_ok": res["teardown"]["ok"], "reasons": res["reasons"],
+           "path": path.name}
+    return res, row
+
+
+def run_campaign(ctx, plan: dict, run_id: str, operator_checks: dict | None = None) -> dict:
     summary = _new_summary(ctx, plan, run_id)
     for w in plan["order_warnings"]:
         log.warning("kolejność: %s", w)
@@ -208,6 +244,20 @@ def run_campaign(ctx, plan: dict, run_id: str) -> dict:
             for i in range(1, st["repeat"] + 1):
                 n += 1
                 rid = new_run_id(ctx.clock.now())
+                if st["control_path"] is not None:
+                    with run_log(ctx.cfg.results_dir, rid):
+                        log.info("kampania %s [%d/%d]: krok %d para %s+%s", plan["campaign_id"], n,
+                                 total, st["index"], st["id"], st["control_id"])
+                        res, row = _run_pair_step(ctx, plan, st, rid, run_id, operator_checks)
+                    summary["runs"].append(row)
+                    _save(ctx, summary)
+                    if res.get("interrupted"):
+                        raise KeyboardInterrupt
+                    if res["verdict"] in ("invalid", "error"):
+                        summary["aborted"] = (f"para {row['manifest_id']}: {res['verdict']} — "
+                                              + "; ".join(res["reasons"])[:500])
+                        return summary
+                    continue
                 with run_log(ctx.cfg.results_dir, rid):
                     log.info("kampania %s [%d/%d]: krok %d %s %s [%d/%d]", plan["campaign_id"], n,
                              total, st["index"], st["id"], st["target"], i, st["repeat"])

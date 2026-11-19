@@ -6,12 +6,13 @@ attack:
   attck: ["T1071", "T1095"]
   timeline_ref: "TrickBot / Glupteba C2 beaconing"
 target: { router_id: r1, profile: ros7 }
-apply:
-  playbook: playbooks/dynamic/enable-covert-forwarding.yml
+apply: { none: true }
+# D-B1: ruch z klienta za r1 (sterowany ręcznie przez operatora; harness potwierdza start i stop
+# w terminalu). Konfiguracja r1 bez zmian → brak efektów ubocznych w L1; w L2 src = WAN r1 (NAT).
 generate:
-  from: kali
+  from: client
   to_endpoint: c2-lab
-  behavior: "beacon stały interwał 60 s"
+  behavior: "HTTP GET co 60 s z klienta za r1 do c2-lab"
   t0_marker: true
 expect:
   detected: true
@@ -21,10 +22,18 @@ expect:
   posture: compromise-suspected
   action: alert
   coverage: full
-  # Ścieżka statystyczna (rita.beacon). MTTD = rotacja Zeeka (do 60 min)
-  # + timer *:05 + import/cykl agenta (~1 min) + dojrzewanie detektora.
-  # Wartość ROBOCZA: 2026-10-28 beacon 60 s osiągnął Critical (1.0) po ~4 h
-  # danych. Do zastąpienia wynikiem krzywej wynik(godziny); osobne warianty
-  # dla interwałów 300 s i 900 s z własnymi budżetami.
-  max_detection_time_s: 18000
+  # Ścieżka statystyczna (rita.beacon, próg beacon_score > 0.7). RITA v5.1.2:
+  # beacon_score = 0,25·ts + 0,25·ds + 0,25·dur + 0,25·hist. Dla ruchu co 60 s
+  # o stałym rozmiarze ts ≈ ds ≈ 1; dur = 0 poniżej 6 z 24 przedziałów okna,
+  # hist rośnie skokowo od 11 przedziałów. W zbiorze w stanie ustalonym (≥ 24 h,
+  # przedział = 1 h): 1–4 h → 0,500; 8 h → 0,667; 10 h → 0,709; 11 h → 0,979.
+  # Próg przekraczany po ok. 10–11 h → planujemy 11 h. Budżet (D-B2):
+  # 11 h + import *:05 (do 65 min) + cykl agenta (5 min) + zapas ok. 1,5 h = 14 h.
+  # Oczekiwany MTTD ok. 39 600–43 500 s; wynik < 6 h = najpewniej zbiór młodszy
+  # niż 24 h (sprawdzić operator_checks), a nie sukces.
+  # Dalsze prace (poza C4): warianty interwału 300 s i 900 s z własną krzywą.
+  max_detection_time_s: 50400
+# Pełny reset r1 po scenariuszu dynamicznym (H4); po zatrzymaniu ruchu finding znika
+# do ok. 2 h 10 min — harness.yml: resolve_timeouts.DYN-011b ≥ 9000 (D-B5).
+# Uruchamiany parą z CTL-001 (komenda `pair`, kampania harness/campaigns/dyn-011b.yml).
 teardown: { reset: true }

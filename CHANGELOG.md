@@ -2,8 +2,13 @@
 
 Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opublikowanych tagów nie przesuwa się ani nie usuwa.
 
-## [Unreleased]
+## [v0.8.0-lab] — 2026-11-19
+Zamrożenie repozytorium przed kampanią końcową pracy dyplomowej. Agent i polityka bez zmian
+względem `v0.7.1-lab`; węzeł monitorujący pozostaje na `v0.7.1-lab` (bez wdrożenia tego taga).
+
 ### Dodane
+- Plany kampanii końcowej `harness/campaigns/static-final-r2.yml` i `static-final-r1.yml`: pełny reset routera na starcie, POL-004, POL-005, POL-006, SITE-007 i SITE-008 ×3 na każdym routerze (POL-003 pominięty — ma n = 11 i n = 14), BEN-002 ×1, na r1 na końcu BEN-001 (H8). Kolejność: r2, potem r1 (r1 dopiero po rozwiązaniu findingu `policy.dynamic.beacon`).
+- Harness, iteracja 5 — skoordynowany przebieg pary DYN-011b + CTL-001 (`harness/pair.py`): `python -m harness pair <dyn-manifest> <ctl-manifest> [--offset S] [--seed N] [--close-artifacts] [--operator-checks F]` oraz krok pary w planie kampanii (`control:`, `repeat: 1`), plan `harness/campaigns/dyn-011b.yml`. Ruch okresowy z klienta za r1 (D-B1) sterowany ręcznie przez operatora — sterownik `generate.from: client` prosi w terminalu o start (`t0` = potwierdzenie) i stop (teardown, także po błędzie i Ctrl-C); konfiguracja r1 bez zmian, brak efektów ubocznych L1. DYN-011b (r1) oceniany na detekcję `policy.dynamic.beacon`, CTL-001 (r2) na brak findingu od startu do pierwszego commitu stanu r2 ≥ 2 cykle po wykryciu na r1 (D-B4). Werdykt pary = najgorsze z ramion; wynik `<run_id>-pair-<dyn>-<ctl>.json` (`results.write_pair`), `summary` daje wiersz na ramię. Warunki startu z węzła (`operator_checks`: okno zbioru RITA ≥ 23 h, import < 2 h, 0 połączeń WAN → cel w 26 h, odczyt ≤ 3 h przed startem; naruszenie = `invalid`) z nowego skryptu tylko do odczytu `lab/monitor-node/scripts/check-rita-dyn011b.sh`, który pokazuje też składowe `beacon_score` pary w trakcie przebiegu. Teardown: stop ruchu → pełny reset wg `teardown.reset` manifestów → czekanie na rozwiązanie findingu na r1 (D-B5). DYN-011b: `apply: none`, `generate.from: client`, budżet 50 400 s (D-B2, wyprowadzenie z krzywej `beacon_score` RITA v5.1.2 w manifeście). Nowy klucz `harness.yml`: `resolve_timeouts` (nadpisanie `timing.resolve_timeout_s` per id manifestu, DYN-011b: 93 600 s — patrz „Znane ograniczenia i korekty”); `endpoints.<nazwa>` odrzuca nieznane klucze.
 - Harness, iteracja 4 — krok ruchowy (`harness/generate.py`) i DYN-011a (ścieżka szybka, rozbieżność L1 vs L2). Sterownik `router` (D-E): ruch generuje sam router pingiem do c2-lab (`count=1200 interval=1s`), uruchomionym w tle przez `:execute` (SSH, konto ansible) — bez śladu w konfiguracji; `t0` = start pingu (`generate.t0_marker`). Cel z puli adresów `endpoints.<nazwa>.addresses` w harness.yml; kolejne powtórzenia biorą kolejny adres (H8: inny cel). Playbook `playbooks/dynamic/covert-icmp.yml` (apply: reguła `/ip firewall raw chain=output action=notrack` dla ICMP do celu; revert: usunięcie po komentarzu). Teardown dynamiczny (H4): revert + pełny reset + czekanie na rozwiązanie findingu do `timing.resolve_timeout_s` (`teardown.reset`, `teardown.resolved`). Zadeklarowane efekty uboczne (`local.drift.firewall-raw`) zapisywane w `side_effects` bez zmiany werdyktu, a przy `--close-artifacts` ich PR też są zamykane (H9). Plan `harness/campaigns/dyn-011a.yml` (DYN-011a ×3 na r1). Nowe klucze konfiguracji: `endpoints`, `timing.resolve_timeout_s`.
 - Harness, iteracja 3 — kampania: `python -m harness campaign <plan.yml> [--seed N] [--check]` (`harness/campaign.py`), plany w `harness/campaigns/` (`static-pol003.yml`: POL-003 ×10 na r2 i r1 z resetem na starcie; `static-new.yml`: nowe manifesty). Walidacja planu (nieznane i zduplikowane klucze, manifesty, routery, przesunięcia, okna H10), ostrzeżenia kolejności H8, losowe przesunięcie per przebieg z ziarnem kampanii, `campaign` w wyniku każdego przebiegu, wynik zbiorczy `<run_id>-campaign-<id>.json` zapisywany po każdym przebiegu, log kampanii i logi przebiegów. Przerwanie (kod 3): nieudany reset, `invalid`/`error`, Ctrl-C; niezgodna bramka po teardownie → pełny reset i dalej (niezgodna po resecie → przerwanie); `fail`/`timeout` → kod 1.
 - Zestawienie: `python -m harness summary <wyniki|katalog|kampania.json>... [--csv F] [--agg-csv F]` (`harness/summary.py`) — Markdown z agregatami per manifest × router (n, werdykty, MTTD min/mediana/p90/max/średnia, mediany czasu do powiadomienia, do naprawy i okna; czasy tylko z `pass`) i wierszem na przebieg; bez konfiguracji i dostępu do labu.
@@ -24,6 +29,7 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 - Manifest POL-006 (`scenarios/policy/policy-winbox-public.yml`): Winbox bez ograniczenia adresu, reguła uniwersalna bez `remediate` — `action: none`, `end_state: unchanged` (D-A).
 
 ### Zmienione
+- Bramka H5: diff `/export` porównywany per menu — linie grupowane po ścieżce menu (linie `#` w jednej grupie), treść i kolejność wewnątrz menu nadal dosłownie (kolejność reguł firewalla/NAT/raw wykrywana), pomijana tylko kolejność samych menu w eksporcie. Powód (lab 2026-11-18): RouterOS 7 kilka minut po pierwszej dzierżawie DHCP przestawia blok `/ip dhcp-server` w eksporcie bez zmiany konfiguracji, co dawało fałszywą niezgodność bramki r1 przy aktywnym kliencie za routerem. Różnice raportowane jako `@@ <menu> @@` + linie `-`/`+`; wzorce `export.rsc` w site-lab bez zmian.
 - `scenario.schema.json`: enum `generate.from` rozszerzony o `router` (ruch z samego routera, DYN-011a/D-E); zmiana addytywna, manifesty bez zmiany `schema_version`. DYN-011a: `generate.from: router`, playbook `covert-icmp.yml`.
 - `harness.yml`: wymagana sekcja `ssh.config`; nowe `artifacts`, `windows`, `timing.precondition_wait_s`, `timing.heartbeat_lead_s`.
 - Nieudany `revert` nie zamienia już werdyktu na `error` (decyzja 2026-11-14).
@@ -31,6 +37,36 @@ Format: `vMAJOR.MINOR.PATCH-lab` (0.x — kontrakt może się zmieniać). Opubli
 - Budżet MTTD scenariuszy POL/SITE: 420 s (cykl 300 s + odczyt L1 + zapas) — POL-003, SITE-007, POL-006.
 - SITE-007 = **nowy** sekret PPP poza inwentarzem (H6), playbook `playbooks/site/ppp-secret-add.yml`; zmiana samego hasła nie jest driftem (D6a) i nie ma scenariusza na labie.
 - `.gitignore`: `harness.yml` (lokalna konfiguracja harnessu) i jawnie `harness/results/`.
+
+### Wyniki labu
+Z `python -m harness summary harness/results/` (47 wierszy przebiegów, 2026-11-14…19; MTTD tylko z `pass`, w s).
+Wszystkie przebiegi z drzewa `69493b7…-dirty` (iteracje 1–5).
+
+| manifest | router | n | pass | invalid | error | MTTD min | MTTD mediana | MTTD max | budżet |
+|---|---|---|---|---|---|---|---|---|---|
+| POL-003 | r2 | 14 | 14 | 0 | 0 | 98,9 | 161,8 | 268,6 | 420 |
+| POL-003 | r1 | 11 | 11 | 0 | 0 | 80,6 | 164,9 | 270,0 | 420 |
+| POL-004 | r2 | 1 | 1 | 0 | 0 | 139,8 | 139,8 | 139,8 | 420 |
+| POL-005 | r2 | 1 | 1 | 0 | 0 | 124,2 | 124,2 | 124,2 | 420 |
+| POL-006 | r2 | 1 | 1 | 0 | 0 | 130,8 | 130,8 | 130,8 | 420 |
+| SITE-007 | r2 | 2 | 2 | 0 | 0 | 110,6 | 163,0 | 215,3 | 420 |
+| SITE-007 | r1 | 1 | 1 | 0 | 0 | 112,9 | 112,9 | 112,9 | 420 |
+| SITE-008 | r1 | 1 | 1 | 0 | 0 | 137,4 | 137,4 | 137,4 | 420 |
+| BEN-001 | r1 | 1 | 1 | 0 | 0 | — | — | — | okno 725,7 |
+| BEN-002 | r2 | 1 | 1 | 0 | 0 | — | — | — | okno 503,6 |
+| BEN-002 | r1 | 1 | 1 | 0 | 0 | — | — | — | okno 853,9 |
+| DYN-011a | r1 | 4 | 4 | 0 | 0 | 1305,7 | 1338,1 | 1382,2 | 3600 |
+| DYN-011b | r1 | 4 | 1 | 2 | 1 | 35 126,6 | 35 126,6 | 35 126,6 | 50 400 |
+| CTL-001 | r2 | 4 | 1 | 2 | 1 | — | — | — | — |
+
+- DYN-011b + CTL-001 `pass` (para `h20261118T181608Z-5b8467`, kampania `dyn-011b`): `beacon_score` 0,707 po 10 godzinnych przedziałach, kontrola na r2 czysta. Pozostałe próby pary: 2× `invalid` (bramka niezgodna przed apply — obiekty 2026-11-17; przestawiony `/ip dhcp-server` w eksporcie v7 2026-11-18, stąd bramka per menu), 1× `error` (przerwanie operatora 2026-11-17, wariant ze schedulerem r1, starsza wersja manifestu).
+- Teardown pary `ok: false`: finding nierozwiązany w 9000 s (patrz niżej). Werdykt bez zmian.
+
+### Znane ograniczenia i korekty
+- **D-B5 skorygowane:** finding RITA (`policy.dynamic.beacon`) wygasa ok. 24 h 05 min – 25 h 15 min po ustaniu beaconu, a nie ok. 2 h 10 min. RITA v5.1.2 w danym imporcie analizuje tylko pary z nowymi połączeniami (`filtered_hashes`), więc ostatnia ocena pary obowiązuje, dopóki `last_seen ≥ max_ts − 24 h`. W tym czasie `posture: compromise-suspected` i naprawy na routerze są wstrzymane. `harness.example.yml`: `resolve_timeouts.DYN-011b: 93600`.
+- Komentarze w `scenarios/dynamic/dynamic-c2-beacon.yml` wyprowadzają budżet z ok. 11 h beaconu i podają rozwiązanie findingu po ok. 2 h 10 min (`resolve_timeouts ≥ 9000`); zmierzone wykrycie to 9,8 h (10 przedziałów, rozpoczęta godzina liczy się jako przedział). Manifest pozostawiony bez zmian ze względu na `sha256` zapisany w wynikach.
+- Przebiegi iteracji 1–5 wykonano z niezacommitowanego drzewa (`harness_commit: 69493b7…-dirty`). Stan kodu odpowiada temu tagowi; po starcie przebiegu DYN-011b (2026-11-18 18:16 UTC) zmieniono w repo tylko diagnostykę `lab/monitor-node/scripts/check-rita-dyn011b.sh` (sekcja 5, odczyt par `sni`) oraz komentarze/przykłady opisane w tej sekcji.
+- Agent i polityka bez zmian względem `v0.7.1-lab` (`git diff v0.7.1-lab -- agent/ policy/` pusty); węzeł pozostaje na `v0.7.1-lab`.
 
 ## [v0.7.1-lab] — 2026-11-11
 ### Zmienione

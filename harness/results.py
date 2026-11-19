@@ -54,6 +54,15 @@ def write_reset(result: dict, results_dir: Path) -> Path:
     return _write(result, results_dir / f"{result['run_id']}-reset-{result['router_id']}.json")
 
 
+def write_pair(result: dict, results_dir: Path) -> Path:
+    """Wynik skoordynowanej pary (iteracja 5): `<run_id>-pair-<dyn>-<ctl>.json`."""
+    assert result["kind"] == "pair"
+    assert result["verdict"] in VERDICTS, result["verdict"]
+    p = result["pair"]
+    return _write(result, results_dir / f"{result['run_id']}-pair-"
+                  f"{p['dynamic_id']}-{p['control_id']}.json")
+
+
 def write_campaign(summary: dict, results_dir: Path) -> Path:
     """Wynik zbiorczy kampanii: `<run_id>-campaign-<campaign_id>.json` (nadpisywany po każdym kroku)."""
     assert summary["kind"] == "campaign"
